@@ -1,0 +1,82 @@
+
+digit_binary: "0" | "1"
+
+digit_octal: digit_binary | "2" | "3" | "4" | "5" | "6" | "7"
+
+digit_decimal: digit_octal | "8" | "9"
+
+digit_hex: digit_decimal | "A" | "B" | "C" | "D" | "E" | "F" | "a" | "b" | "c" | "d" | "e" | "f"
+
+letter_upper: "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J" | "K" | "L" | "M" | "N" | "O" | "P" | "Q" | "R" | "S" | "T" | "U" | "V" | "W" | "X" | "Y" | "Z"
+
+letter_lower: "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "i" | "j" | "k" | "l" | "m" | "n" | "o" | "p" | "q" | "r" | "s" | "t" | "u" | "v" | "w" | "x" | "y" | "z"
+
+^ws: "\n" | "\r" | " " | "\t"
+
+letter: letter_lower | letter_upper
+
+number_hex: "0x" digit_hex+
+
+number_decimal: digit_decimal+
+
+number_octal: "0o" digit_octal+
+
+number_binary: "0b" digit_binary+
+
+number: number_hex | number_decimal | number_octal | number_binary
+
+token: (letter | "_") (letter | digit_decimal | "_")*
+
+
+math_expr_primitive: number | token | "(" ws* math_expr ws* ")"
+
+math_expr_mul: math_expr_primitive (ws* ("*" | "/") ws* math_expr_primitive)*
+
+math_expr_add: math_expr_mul (ws* ("+" | "-") ws* math_expr_mul)*
+
+math_expr: math_expr_add
+
+math_exprs: (ws* math_expr ws* ";")*
+
+# 2342;
+# a + b;
+# a + b * c + d;
+
+#a + b + c + d
+
+#num: 
+#mul: num (* num)*
+#add: mul (+ mul)*
+#expr: add
+
+#expr: (
+#    expr: (
+#        expr: (
+#            expr: (a) + expr: (b)
+#        ) + expr(c)
+#    ) + expr(d)
+#)
+
+# a * (b + c) + d;
+
+mark: token ws* ":"
+
+#TODO: add other registers
+kv_reg: "rax" | "rbx" | "rcx" | "rdx"
+
+addr_expr: "[" ws* kv_reg ws* ("+" ws* kv_reg ws*)? ("*" ws* number ws*)? (("+" | "-") ws* number ws*)? "]"
+         | "[" ws* number ws* "]"
+
+argument: kv_reg | addr_expr
+
+#TODO: add more mnemonics
+instruction_regrm: ("mov" | "add" | "sub") (ws+ argument (ws* "," ws* argument)*)?
+
+#TODO: add more mnemonics
+instruction_jmp: ("jmp" | "jne" | "jz") ws+ token
+
+instruction: instruction_regrm | instruction_jmp
+
+statement: instruction | mark
+
+root: ws* (statement (ws+ statement)* ws*)?
