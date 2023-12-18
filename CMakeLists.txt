@@ -42,11 +42,16 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(PROJECT_SOURCES
 	src/main.cpp
+	src/mylang.cpp
+
 	src/rules/test.txt
 	src/gen/test.hpp
+
+	src/rules/mylang.txt
+	src/gen/mylang.hpp
 )
 
-# ADD_MSVC_PRECOMPILED_HEADER("src" "pch.hpp" "pch.cpp" PROJECT_SOURCES)
+ADD_MSVC_PRECOMPILED_HEADER("src" "pch.hpp" "pch.cpp" PROJECT_SOURCES)
 
 add_executable(pgen-test ${PROJECT_SOURCES})
 
@@ -66,5 +71,14 @@ add_custom_command(
 	DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/rules/test.txt" "$<TARGET_FILE:pgen>"
 	MAIN_DEPENDENCY "${CMAKE_CURRENT_SOURCE_DIR}/src/rules/test.txt"
 	COMMENT "Generating ${CMAKE_CURRENT_SOURCE_DIR}/src/gen/test.hpp"
+	VERBATIM
+)
+
+add_custom_command(
+	OUTPUT "${CMAKE_CURRENT_SOURCE_DIR}/src/gen/mylang.hpp"
+	COMMAND "$<TARGET_FILE:pgen>" --output "${CMAKE_CURRENT_SOURCE_DIR}/src/gen/mylang.hpp" --input "${CMAKE_CURRENT_SOURCE_DIR}/src/rules/mylang.txt" --namespace mylang
+	DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/rules/mylang.txt" "$<TARGET_FILE:pgen>"
+	MAIN_DEPENDENCY "${CMAKE_CURRENT_SOURCE_DIR}/src/rules/mylang.txt"
+	COMMENT "Generating ${CMAKE_CURRENT_SOURCE_DIR}/src/gen/mylang.hpp"
 	VERBATIM
 )

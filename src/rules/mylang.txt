@@ -1,0 +1,53 @@
+
+
+digit_binary: "0" | "1"
+
+digit_octal: digit_binary | "2" | "3" | "4" | "5" | "6" | "7"
+
+digit_decimal: digit_octal | "8" | "9"
+
+digit_hex: digit_decimal | "A" | "B" | "C" | "D" | "E" | "F" | "a" | "b" | "c" | "d" | "e" | "f"
+
+letter_upper: "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J" | "K" | "L" | "M" | "N" | "O" | "P" | "Q" | "R" | "S" | "T" | "U" | "V" | "W" | "X" | "Y" | "Z"
+
+letter_lower: "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "i" | "j" | "k" | "l" | "m" | "n" | "o" | "p" | "q" | "r" | "s" | "t" | "u" | "v" | "w" | "x" | "y" | "z"
+
+^ws: "\n" | "\r" | " " | "\t"
+
+letter: letter_lower | letter_upper
+
+number_hex: "0x" digit_hex+
+
+number_decimal: digit_decimal+
+
+number_octal: "0o" digit_octal+
+
+number_binary: "0b" digit_binary+
+
+number: number_hex | number_decimal | number_octal | number_binary
+
+token: (letter | "_") (letter | digit_decimal | "_")*
+
+token_path: token (ws* "." ws* token)*
+
+
+expr_call: (token_path | expr_group) ws* "(" ws* (expr ws* ("," ws* expr ws*)*)? ")"
+
+expr_group: "(" ws* expr ws* ")"
+
+expr_primitive: number | token_path | expr_group
+
+expr_mul: expr_primitive (ws* ("*" | "/") ws* expr_primitive)*
+
+expr_add: expr_mul (ws* ("+" | "-") ws* expr_mul)*
+
+expr: expr_call | expr_add
+
+
+statement_assign: token_path ws* "=" ws* expr ws* ";"
+
+statement_expr: expr ws* ";"
+
+statement: statement_assign | statement_expr
+
+root: (ws* statement)* ws*

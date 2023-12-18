@@ -26,10 +26,13 @@ std::string generate_tree_simple(const $$Parsed &p, size_t align = 0)
 	return result;
 }
 
-}
+} // namespace test::helpers
 
 #include <iostream>
 #include <cassert>
+
+namespace test_
+{
 
 struct State
 {
@@ -119,13 +122,13 @@ void evaluate2(const test::$$Parsed &p, State &state)
 						}
 
 						// addr_expr_$g1 -> number
-						result.rm_scale = atoi(test::helpers::flatten(g->group[1]).c_str());
+						result.rm_scale = atoi(g->group[1].flatten().c_str());
 					}
 
 					if (auto g = arg.group[0].find("addr_expr_$g2"))
 					{
 						// addr_expr_$g2 -> number
-						result.rm_displacement = atoi(test::helpers::flatten(g->group[1]).c_str());
+						result.rm_displacement = atoi(g->group[1].flatten().c_str());
 
 						if (g->group[0].group[0].literal == "-")
 							result.rm_displacement = -result.rm_displacement;
@@ -237,7 +240,7 @@ int evaluate(const test::$$Parsed &p)
 
 		for (size_t i = 1; i < p.group.size(); ++i)
 		{
-			if (test::helpers::flatten(p.group[i].group[0]) == "+")
+			if (p.group[i].group[0].flatten() == "+")
 			{
 				r += evaluate(p.group[i].group[1]);
 			}
@@ -257,7 +260,7 @@ int evaluate(const test::$$Parsed &p)
 
 		for (size_t i = 1; i < p.group.size(); ++i)
 		{
-			if (test::helpers::flatten(p.group[i].group[0]) == "*")
+			if (p.group[i].group[0].flatten() == "*")
 			{
 				r *= evaluate(p.group[i].group[1]);
 			}
@@ -275,7 +278,7 @@ int evaluate(const test::$$Parsed &p)
 	{
 		if (p.group[0].identifier == "number")
 		{
-			return std::atoi(test::helpers::flatten(p.group[0]).c_str());
+			return std::atoi(p.group[0].flatten().c_str());
 		}
 		else
 		if (p.group[0].identifier == "token")
@@ -315,15 +318,21 @@ a * (b + c) + d;
 
 	// std::cout << test::helpers::flatten(result.value().group[0].group[0].group[0].group[0]) << "\n";
 
-	std::cout << test::helpers::flatten(result.value()) << " = " << evaluate(result.value()) << "\n";
+	std::cout << result.value().flatten() << " = " << evaluate(result.value()) << "\n";
 	// std::cout << test::helpers::generate_graphviz(result.value());
 	// std::cout << test::helpers::generate_tree_simple(result.value());
 
 	int a = 0;
 }
 
+
+} // namespace test_
+
+extern void mylang_main();
+
 int main()
 {
-	test1();
-	// test2();
+	// test_::test1();
+	// test_::test2();
+	mylang_main();
 }
