@@ -7,28 +7,65 @@
 #include <bit>
 #include <memory>
 #include <unordered_set>
+#include <ranges>
 
 namespace vm
 {
 
-struct Lambda;
+struct IValue;
 struct State;
+struct LambdaValue;
 
-using func_t = int64_t(*)(const std::vector<int64_t> &args, State &state);
-using lambda_t = int64_t(*)(const Lambda *lambda, const std::vector<int64_t> &args, State &state);
+using ivalue_t = std::shared_ptr<IValue>;
+using lambda_ptr_t = ivalue_t(*)(const LambdaValue *lambda, const std::vector<ivalue_t> &args, State &state);
+using variables_t = std::unordered_map<std::string, std::shared_ptr<IValue>>;
 
-struct Lambda
+enum class EValueType
 {
-	lambda_t lambda_ptr = nullptr;
+	Int64,
+	Dict,
+	Lambda,
+};
+
+struct IValue
+{
+	EValueType type;
+	IValue(EValueType _type) : type{_type} {}
+	virtual ~IValue() {}
+};
+
+template <EValueType _TYPE>
+struct IValueTyped : IValue
+{
+	IValueTyped() : IValue(_TYPE) {}
+};
+
+struct Int64Value : IValueTyped<EValueType::Int64>
+{
+	int64_t val = 0;
+};
+
+struct DictValue : IValueTyped<EValueType::Dict>
+{
+	variables_t fields;
+};
+
+struct LambdaValue : IValueTyped<EValueType::Lambda>
+{
+	lambda_ptr_t lambda_ptr = nullptr;
 	const mylang::$$Parsed *expr_block = nullptr;
 	std::vector<std::string> args;
 };
+
+using vint64_t = std::shared_ptr<Int64Value>;
+using vdict_t = std::shared_ptr<DictValue>;
+using vlambda_t = std::shared_ptr<LambdaValue>;
 
 struct State
 {
 	struct StateBlock
 	{
-		std::unordered_map<std::string, int64_t> variables;
+		variables_t variables;
 	};
 
 	struct StateFunction
@@ -38,32 +75,68 @@ struct State
 	};
 
 	std::vector<StateFunction> function_scopes;
-	std::unordered_set<std::unique_ptr<Lambda>> lambdas;
-	int64_t last_return = 0;
+	ivalue_t last_return;
 
-	Lambda *create_lambda(lambda_t lambda)
+	vint64_t create_int64(int64_t val)
 	{
-		auto it = lambdas.insert(std::make_unique<Lambda>()).first;
-		it->get()->lambda_ptr = lambda;
-		return it->get();
+		auto i = std::make_shared<Int64Value>();
+		i->val = val;
+		return i;
 	}
 
-	Lambda *create_lambda(std::string name, lambda_t lambda)
+	vlambda_t create_lambda(lambda_ptr_t lambda)
 	{
-		auto l = create_lambda(lambda);
-		*declare_or_get_variable(name) = std::bit_cast<int64_t>(l);
+		auto l = std::make_shared<LambdaValue>();
+		l->lambda_ptr = lambda;
 		return l;
 	}
 
-	int64_t *declare_or_get_variable(const std::string &name)
+	vlambda_t create_lambda(std::initializer_list<std::string> path, lambda_ptr_t lambda)
+	{
+		assert(path.size() > 0);
+
+		auto l = create_lambda(lambda);
+
+		auto it = path.begin();
+
+		ivalue_t *v = &get_or_declare_variable(*it++);
+
+		while (it != path.end())
+		{
+			if (!*v)
+				*v = std::static_pointer_cast<IValue>(create_dict());
+
+			v = &std::static_pointer_cast<DictValue>(*v)->fields[*it++];
+		}
+
+		*v = std::static_pointer_cast<IValue>(l);
+
+		return l;
+	}
+
+	vdict_t create_dict()
+	{
+		auto d = std::make_shared<DictValue>();
+		return d;
+	}
+
+	ivalue_t &get_or_declare_variable(const std::string &name)
 	{
 		assert(function_scopes.size() > 0);
 		assert(function_scopes[0].blocks.size() > 0);
 
-		return &function_scopes.back().blocks.back().variables[name];
+		return function_scopes.back().blocks.back().variables[name];
 	}
 
-	int64_t *find_variable(const std::string &name)
+	variables_t *get_current_variables()
+	{
+		assert(function_scopes.size() > 0);
+		assert(function_scopes[0].blocks.size() > 0);
+
+		return &function_scopes.back().blocks.back().variables;
+	}
+
+	ivalue_t find_variable(const std::string &name)
 	{
 		assert(function_scopes.size() > 0);
 		assert(function_scopes[0].blocks.size() > 0);
@@ -75,51 +148,37 @@ struct State
 		{
 			if (auto v = it->variables.find(name); v != it->variables.end())
 			{
-				return &v->second;
+				return v->second;
 			}
 		}
 
-		return nullptr;
-	}
-
-	Lambda *find_lambda(int64_t func)
-	{
-		auto l = ((std::unordered_set<int64_t> *)&lambdas);
-
-		if (auto v = l->find(func); v != l->end())
-			return std::bit_cast<Lambda *>(*v);
-
-		return nullptr;
+		return {};
 	}
 };
 
+ivalue_t &evaluate_token_path(const mylang::$$Parsed &statement, State &state, bool declare);
 void evaluate_statement(const mylang::$$Parsed &statement, State &state);
 
-int64_t evaluate_call(int64_t func, const std::string &function_name, const std::vector<int64_t> &args, State &state)
+ivalue_t evaluate_call(ivalue_t func, const std::vector<ivalue_t> &args, State &state)
 {
-	int64_t result = 0;
+	if (!func)
+		throw 1;
+
+	if (func->type != EValueType::Lambda)
+		throw 1;
+
+	ivalue_t result;
 
 	auto func_layer = state.function_scopes.size() + 1;
 
 	{
 		auto &func = state.function_scopes.emplace_back();
-		func.name = function_name;
 		func.blocks.emplace_back();
 	}
 
 	{
-		if (const auto *lambda = state.find_lambda(func))
-		{
-			// user defined functions
-			lambda_t lambda_ptr = lambda->lambda_ptr;
-			result = lambda_ptr(lambda, args, state);
-		}
-		else
-		{
-			// precompiled functions
-			func_t func_ptr = std::bit_cast<func_t>(func);
-			result = func_ptr(args, state);
-		}
+		auto l = std::static_pointer_cast<LambdaValue>(func);
+		result = l->lambda_ptr(l.get(), args, state);
 	}
 
 	{
@@ -131,7 +190,7 @@ int64_t evaluate_call(int64_t func, const std::string &function_name, const std:
 	return result;
 }
 
-int64_t evaluate_expr(const mylang::$$Parsed &par, State &state)
+ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 {
 	if (par.identifier == "expr")
 	{
@@ -161,24 +220,39 @@ int64_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 
 		auto result = evaluate_expr(expr_mul, state);
 
-		for (size_t i = 1; i < expr_add.group.size(); ++i)
+		if (expr_add.group.size() > 1)
 		{
-			const auto &expr_add_$g0 = expr_add.group[i];
-			const auto &expr_add_$g0_$g0 = expr_add_$g0.group[0];
+			if (!result)
+				throw 1;
 
-			const auto &sign = expr_add_$g0_$g0.group[0];
-			const auto &expr_mul = expr_add_$g0.group[1];
+			if (result->type != EValueType::Int64)
+				throw 1;
 
-			auto val = evaluate_expr(expr_mul, state);
-
-			if (sign.literal == "+")
+			for (size_t i = 1; i < expr_add.group.size(); ++i)
 			{
-				result += val;
-			}
-			else
-			if (sign.literal == "-")
-			{
-				result -= val;
+				const auto &expr_add_$g0 = expr_add.group[i];
+				const auto &expr_add_$g0_$g0 = expr_add_$g0.group[0];
+
+				const auto &sign = expr_add_$g0_$g0.group[0];
+				const auto &expr_mul = expr_add_$g0.group[1];
+
+				auto val = evaluate_expr(expr_mul, state);
+
+				if (!val)
+					throw 1;
+
+				if (val->type != EValueType::Int64)
+					throw 1;
+
+				if (sign.literal == "+")
+				{
+					std::static_pointer_cast<Int64Value>(result)->val += std::static_pointer_cast<Int64Value>(val)->val;
+				}
+				else
+				if (sign.literal == "-")
+				{
+					std::static_pointer_cast<Int64Value>(result)->val -= std::static_pointer_cast<Int64Value>(val)->val;
+				}
 			}
 		}
 
@@ -192,24 +266,39 @@ int64_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 
 		auto result = evaluate_expr(expr_primitive, state);
 
-		for (size_t i = 1; i < expr_mul.group.size(); ++i)
+		if (expr_mul.group.size() > 1)
 		{
-			const auto &expr_mul_$g0 = expr_mul.group[i];
-			const auto &expr_mul_$g0_$g0 = expr_mul_$g0.group[0];
+			if (!result)
+				throw 1;
 
-			const auto &sign = expr_mul_$g0_$g0.group[0];
-			const auto &expr_primitive = expr_mul_$g0.group[1];
+			if (result->type != EValueType::Int64)
+				throw 1;
 
-			auto val = evaluate_expr(expr_primitive, state);
-
-			if (sign.literal == "*")
+			for (size_t i = 1; i < expr_mul.group.size(); ++i)
 			{
-				result *= val;
-			}
-			else
-			if (sign.literal == "/")
-			{
-				result /= val;
+				const auto &expr_mul_$g0 = expr_mul.group[i];
+				const auto &expr_mul_$g0_$g0 = expr_mul_$g0.group[0];
+
+				const auto &sign = expr_mul_$g0_$g0.group[0];
+				const auto &expr_primitive = expr_mul_$g0.group[1];
+
+				auto val = evaluate_expr(expr_primitive, state);
+
+				if (!val)
+					throw 1;
+
+				if (val->type != EValueType::Int64)
+					throw 1;
+
+				if (sign.literal == "*")
+				{
+					std::static_pointer_cast<Int64Value>(result)->val *= std::static_pointer_cast<Int64Value>(val)->val;
+				}
+				else
+				if (sign.literal == "/")
+				{
+					std::static_pointer_cast<Int64Value>(result)->val /= std::static_pointer_cast<Int64Value>(val)->val;
+				}
 			}
 		}
 
@@ -252,13 +341,13 @@ int64_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 	if (par.identifier == "number")
 	{
 		const auto &number = par;
-		return (double)atoi(number.flatten().c_str());
+		return std::static_pointer_cast<IValue>(state.create_int64(atoi(number.flatten().c_str())));
 	}
 	else
 	if (par.identifier == "token_path")
 	{
 		const auto &token_path = par;
-		return *state.find_variable(token_path.flatten());
+		return evaluate_token_path(token_path, state, false);
 	}
 	else
 	if (par.identifier == "expr_group")
@@ -273,14 +362,12 @@ int64_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 		const auto &expr_call = par;
 		const auto &expr_call_$g0 = expr_call.group[0];
 
-		int64_t func = 0;
-		std::string function_name;
+		ivalue_t func;
 
 		if (expr_call_$g0.group[0].identifier == "token_path")
 		{
 			const auto &token_path = expr_call_$g0.group[0];
-			function_name = token_path.flatten();
-			func = *state.find_variable(function_name);
+			func = evaluate_token_path(token_path, state, false);
 		}
 		else
 		if (expr_call_$g0.identifier == "expr_group")
@@ -293,7 +380,7 @@ int64_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 			throw 1;
 		}
 
-		std::vector<int64_t> args;
+		std::vector<ivalue_t> args;
 
 		if (const auto *expr_call_$g1 = expr_call.find("expr_call_$g1"))
 		{
@@ -309,20 +396,20 @@ int64_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 			}
 		}
 
-		return evaluate_call(func, function_name, args, state);
+		return evaluate_call(func, args, state);
 	}
 	else
 	if (par.identifier == "expr_function")
 	{
 		const auto &expr_function = par;
 
-		auto l = state.create_lambda([](const Lambda *lambda, const std::vector<int64_t> &args, State &state) -> int64_t {
+		auto l = state.create_lambda([](const LambdaValue *lambda, const std::vector<ivalue_t> &args, State &state) -> ivalue_t {
 
 			if (lambda->args.size() != args.size())
 				throw 1;
 
 			for (size_t i = 0; i < args.size(); ++i)
-				*state.declare_or_get_variable(lambda->args[i]) = args[i];
+				state.get_or_declare_variable(lambda->args[i]) = args[i];
 
 			const auto *expr_block = lambda->expr_block;
 
@@ -333,8 +420,8 @@ int64_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 				evaluate_statement(statement, state);
 			}
 
-			int64_t last_return = state.last_return;
-			state.last_return = 0;
+			ivalue_t last_return = state.last_return;
+			state.last_return = {};
 
 			return last_return;
 		});
@@ -355,12 +442,49 @@ int64_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 		l->expr_block = expr_function.find("expr_block");
 		assert(l->expr_block);
 
-		return std::bit_cast<int64_t>(l);
+		return std::static_pointer_cast<IValue>(l);
 	}
 	else
 	{
 		throw 1;
 	}
+}
+
+ivalue_t &evaluate_token_path(const mylang::$$Parsed &token_path, State &state, bool declare)
+{
+	const auto &token = token_path.group[0];
+
+	auto *vars = state.get_current_variables();
+	std::string tok = token.flatten();
+	auto it = vars->find(tok);
+
+	for (size_t i = 1; i < token_path.group.size(); ++i)
+	{
+		const auto &token_path_$g0 = token_path.group[i];
+		const auto &token = token_path_$g0.group[1];
+
+		if (it == vars->end())
+			throw 1;
+
+		assert(it->second);
+
+		if (it->second->type != EValueType::Dict)
+			throw 1;
+
+		vars = &std::static_pointer_cast<DictValue>(it->second)->fields;
+		tok = token.flatten();
+		it = vars->find(tok);
+	}
+
+	if (it == vars->end())
+	{
+		if (!declare)
+			throw 1;
+
+		it = vars->insert({ tok, {} }).first;
+	}
+
+	return it->second;
 }
 
 void evaluate_statement(const mylang::$$Parsed &statement, State &state)
@@ -372,7 +496,7 @@ void evaluate_statement(const mylang::$$Parsed &statement, State &state)
 		const auto &expr = statement_assign.group[2];
 
 		auto result = evaluate_expr(expr, state);
-		*state.declare_or_get_variable(token_path.flatten()) = result;
+		evaluate_token_path(token_path, state, true) = result;
 	}
 	else
 	if (statement.group[0].identifier == "statement_return")
@@ -406,18 +530,25 @@ void evaluate_root(const mylang::$$Parsed &root)
 		func.blocks.emplace_back();
 	}
 
-	state.create_lambda("std.print", [](const Lambda *, const std::vector<int64_t> &args, State &state) -> int64_t {
+	state.create_lambda({"std","print"}, [](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> ivalue_t {
 		for (size_t i = 0; i < args.size(); ++i)
 		{
 			if (i != 0)
 				std::cout << " ";
 
-			std::cout << args[i];
+			if (args[i]->type == EValueType::Int64)
+				std::cout << std::static_pointer_cast<Int64Value>(args[i])->val;
+			else // TODO
+				std::cout << "IValue{" << (void *)args[i].get() << "}";
 		}
 
 		std::cout << "\n";
 
-		return 0;
+		return {};
+	});
+
+	state.create_lambda({"std","dict"}, [](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> ivalue_t {
+		return state.create_dict();
 	});
 
 	for (size_t i = 0; i < root.group.size(); ++i)
@@ -470,13 +601,23 @@ if (1)
 {
 text = R"AAA(
 
-my_mul_sum = |a, b, c| {
-	my_mul = |a, b| { return a * b; };
-	return my_mul(a, b) + c;
+
+dict = std.dict();
+
+dict.std = std;
+
+dict.my_mul = |dict, a, b| { return a * b; };
+
+dict.my_mul_sum = |dict, a, b, c| {
+	return dict.my_mul(dict, a, b) + c;
 };
 
-std.print(my_mul_sum(2, 3, 4));
+dict.my_mul_sum_print = |dict, a, b, c| {
+	result = dict.my_mul_sum(dict, 2, 3, 4);
+	dict.std.print(result);
+};
 
+dict.my_mul_sum_print(dict, 2, 3, 4);
 
 )AAA";
 }
