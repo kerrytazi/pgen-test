@@ -31,23 +31,30 @@ token: (letter | "_") (letter | digit_decimal | "_")*
 token_path: token (ws* "." ws* token)*
 
 
+expr_function: "|" ws* (token_path ws* ("," ws* token_path ws*)*)? "|" ws* expr_block
+
+expr_block: "{" ws* (statement ws*)* "}"
+
 expr_call: (token_path | expr_group) ws* "(" ws* (expr ws* ("," ws* expr ws*)*)? ")"
 
 expr_group: "(" ws* expr ws* ")"
 
-expr_primitive: number | token_path | expr_group
+expr_primitive: expr_call | number | token_path | expr_group
 
 expr_mul: expr_primitive (ws* ("*" | "/") ws* expr_primitive)*
 
 expr_add: expr_mul (ws* ("+" | "-") ws* expr_mul)*
 
-expr: expr_call | expr_add
+expr: expr_function | expr_add
 
 
 statement_assign: token_path ws* "=" ws* expr ws* ";"
 
+statement_return: "return" ws+ expr ws* ";"
+
 statement_expr: expr ws* ";"
 
-statement: statement_assign | statement_expr
+statement: statement_assign | statement_return | statement_expr
+
 
 root: (ws* statement)* ws*
