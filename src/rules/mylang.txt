@@ -1,5 +1,4 @@
 
-
 digit_binary: "0" | "1"
 
 digit_octal: digit_binary | "2" | "3" | "4" | "5" | "6" | "7"
@@ -14,6 +13,9 @@ letter_lower: "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "i" | "j" | "k" | 
 
 ws: "\n" | "\r" | " " | "\t"
 
+str: "\"" (("\\\"" | "\""^)*) "\""
+
+
 kv_return: "return"
 
 kv_let: "let"
@@ -23,6 +25,13 @@ kv_mut: "mut"
 kv_if: "if"
 
 kv_else: "else"
+
+kv_false: "false"
+
+kv_true: "true"
+
+kv_boolean: kv_false | kv_true
+
 
 letter: letter_lower | letter_upper
 
@@ -49,21 +58,19 @@ expr_call: (token_path | expr_group | expr_function) (ws*) "(" (ws*) (expr (ws*)
 
 expr_group: "(" (ws*) expr (ws*) ")"
 
-expr_primitive: expr_if | expr_call | expr_function | number | expr_assign | token_path | expr_group
+expr_primitive: expr_if | expr_call | expr_function | kv_boolean | str | number | expr_assign | token_path | expr_group
 
 expr_mul: expr_primitive ((ws*) ("*" | "/") (ws*) expr_primitive)*
 
 expr_add: expr_mul ((ws*) ("+" | "-") (ws*) expr_mul)*
 
-expr_bool_compare: expr (ws*) ("<=" | ">=" | "<" | ">" | "==" | "!=") (ws*) expr
+expr_bool_compare: expr_add ((ws*) ("<=" | ">=" | "<" | ">" | "==" | "!=") (ws*) expr_add)?
 
-expr_bool: expr_bool_compare
-
-expr_if: kv_if (ws*) "(" (ws*) expr_bool (ws*) ")" (ws*) expr_block ((ws*) kv_else (ws*) expr_block)?
+expr_if: kv_if (ws*) "(" (ws*) expr (ws*) ")" (ws*) expr_block ((ws*) kv_else (ws*) expr_block)?
 
 expr_assign: token_path (ws*) "=" (ws*) expr
 
-expr: expr_add
+expr: expr_bool_compare
 
 
 statement_let: kv_let (ws+) ((kv_mut ws+)?) token (ws*) "=" (ws*) expr (ws*) ";"

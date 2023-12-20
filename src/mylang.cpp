@@ -25,7 +25,8 @@ using variables_t = std::unordered_map<std::string, std::shared_ptr<IValue>>;
 enum class EValueType : uint8_t
 {
 	Bool,
-	Int64,
+	Str,
+	I64,
 	Dict,
 	Lambda,
 };
@@ -49,7 +50,12 @@ struct BoolValue : IValueTyped<EValueType::Bool>
 	bool val = false;
 };
 
-struct Int64Value : IValueTyped<EValueType::Int64>
+struct StrValue : IValueTyped<EValueType::Str>
+{
+	std::string val;
+};
+
+struct I64Value : IValueTyped<EValueType::I64>
 {
 	int64_t val = 0;
 };
@@ -68,7 +74,8 @@ struct LambdaValue : IValueTyped<EValueType::Lambda>
 };
 
 using vbool_t = std::shared_ptr<BoolValue>;
-using vint64_t = std::shared_ptr<Int64Value>;
+using vi64_t = std::shared_ptr<I64Value>;
+using vstr_t = std::shared_ptr<StrValue>;
 using vdict_t = std::shared_ptr<DictValue>;
 using vlambda_t = std::shared_ptr<LambdaValue>;
 
@@ -95,9 +102,16 @@ struct State
 		return i;
 	}
 
-	vint64_t create_int64(int64_t val)
+	vstr_t create_str(std::string val)
 	{
-		auto i = std::make_shared<Int64Value>();
+		auto s = std::make_shared<StrValue>();
+		s->val = val;
+		return s;
+	}
+
+	vi64_t create_i64(int64_t val)
+	{
+		auto i = std::make_shared<I64Value>();
 		i->val = val;
 		return i;
 	}
@@ -136,6 +150,48 @@ struct State
 	{
 		auto d = std::make_shared<DictValue>();
 		return d;
+	}
+
+	ivalue_t shallow_copy(ivalue_t v)
+	{
+		if (v->type == EValueType::Bool)
+		{
+			auto result = create_bool(false);
+			*result = *std::static_pointer_cast<BoolValue>(v);
+			return result;
+		}
+		else
+		if (v->type == EValueType::Str)
+		{
+			auto result = create_str("");
+			*result = *std::static_pointer_cast<StrValue>(v);
+			return result;
+		}
+		else
+		if (v->type == EValueType::I64)
+		{
+			auto result = create_i64(0);
+			*result = *std::static_pointer_cast<I64Value>(v);
+			return result;
+		}
+		else
+		if (v->type == EValueType::Dict)
+		{
+			auto result = create_dict();
+			*result = *std::static_pointer_cast<DictValue>(v);
+			return result;
+		}
+		else
+		if (v->type == EValueType::Lambda)
+		{
+			auto result = create_lambda(nullptr);
+			*result = *std::static_pointer_cast<LambdaValue>(v);
+			return result;
+		}
+		else
+		{
+			throw 1;
+		}
 	}
 
 	ivalue_t &get_or_declare_variable(const std::string &name)
@@ -235,8 +291,160 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 	if (par.identifier == "expr")
 	{
 		const auto &expr = par;
-		const auto &expr_add = expr.group[0];
-		return evaluate_expr(expr_add, state);
+		const auto &expr_bool_compare = expr.group[0];
+		return evaluate_expr(expr_bool_compare, state);
+	}
+	else
+	if (par.identifier == "expr_bool_compare")
+	{
+		const auto &expr_bool_compare = par;
+		const auto &expr_add_left = expr_bool_compare.group[0];
+
+		auto left = evaluate_expr(expr_add_left, state);
+
+		if (expr_bool_compare.group.size() > 1)
+		{
+			const auto &expr_bool_compare_$g0 = expr_bool_compare.group[1];
+			const auto &expr_bool_compare_$g0_$g1 = expr_bool_compare_$g0.group[1];
+			const auto expr_add_right = expr_bool_compare_$g0.group[3];
+
+			auto right = evaluate_expr(expr_add_right, state);
+
+			std::string comparator_str = expr_bool_compare_$g0_$g1.flatten();
+
+			const auto &get_numbers = [&]() -> std::pair<int64_t, int64_t> {
+				if (!left)
+					throw 1;
+
+				if (left->type != EValueType::I64)
+					throw 1;
+
+				if (!right)
+					throw 1;
+
+				if (right->type != EValueType::I64)
+					throw 1;
+
+				auto ileft = std::static_pointer_cast<I64Value>(left)->val;
+				auto iright = std::static_pointer_cast<I64Value>(right)->val;
+
+				return { ileft, iright };
+			};
+
+			if (comparator_str == "<=")
+			{
+				auto [ileft, iright] = get_numbers();
+				return state.create_bool(ileft <= iright);
+			}
+			else
+			if (comparator_str == ">=")
+			{
+				auto [ileft, iright] = get_numbers();
+				return state.create_bool(ileft >= iright);
+			}
+			else
+			if (comparator_str == "<" )
+			{
+				auto [ileft, iright] = get_numbers();
+				return state.create_bool(ileft < iright);
+			}
+			else
+			if (comparator_str == ">")
+			{
+				auto [ileft, iright] = get_numbers();
+				return state.create_bool(ileft >= iright);
+			}
+			else
+			if (comparator_str == "==")
+			{
+				if (!left && !right)
+					return state.create_bool(true);
+
+				if (left->type != right->type)
+					return state.create_bool(false);
+
+				if (left->type == EValueType::Bool)
+				{
+					auto ileft = std::static_pointer_cast<BoolValue>(left)->val;
+					auto iright = std::static_pointer_cast<BoolValue>(right)->val;
+				
+					return state.create_bool(ileft == iright);
+				}
+				else
+				if (left->type == EValueType::Str)
+				{
+					auto ileft = std::static_pointer_cast<StrValue>(left)->val;
+					auto iright = std::static_pointer_cast<StrValue>(right)->val;
+				
+					return state.create_bool(ileft == iright);
+				}
+				else
+				if (left->type == EValueType::I64)
+				{
+					auto ileft = std::static_pointer_cast<I64Value>(left)->val;
+					auto iright = std::static_pointer_cast<I64Value>(right)->val;
+				
+					return state.create_bool(ileft == iright);
+				}
+				else
+				if (left->type == EValueType::Dict || left->type == EValueType::Lambda)
+				{
+					return state.create_bool(left.get() == right.get());
+				}
+				else
+				{
+					throw 1;
+				}
+			}
+			else
+			if (comparator_str == "!=")
+			{
+				if (!left != !right)
+					return state.create_bool(true);
+
+				if (left->type != right->type)
+					return state.create_bool(true);
+
+				if (left->type == EValueType::Bool)
+				{
+					auto ileft = std::static_pointer_cast<BoolValue>(left)->val;
+					auto iright = std::static_pointer_cast<BoolValue>(right)->val;
+				
+					return state.create_bool(ileft != iright);
+				}
+				else
+				if (left->type == EValueType::Str)
+				{
+					auto ileft = std::static_pointer_cast<StrValue>(left)->val;
+					auto iright = std::static_pointer_cast<StrValue>(right)->val;
+				
+					return state.create_bool(ileft != iright);
+				}
+				else
+				if (left->type == EValueType::I64)
+				{
+					auto ileft = std::static_pointer_cast<I64Value>(left)->val;
+					auto iright = std::static_pointer_cast<I64Value>(right)->val;
+				
+					return state.create_bool(ileft != iright);
+				}
+				else
+				if (left->type == EValueType::Dict || left->type == EValueType::Lambda)
+				{
+					return state.create_bool(left.get() != right.get());
+				}
+				else
+				{
+					throw 1;
+				}
+			}
+			else
+			{
+				throw 1;
+			}
+		}
+
+		return left;
 	}
 	else
 	if (par.identifier == "expr_add")
@@ -251,8 +459,7 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 			if (!result)
 				throw 1;
 
-			if (result->type != EValueType::Int64)
-				throw 1;
+			result = state.shallow_copy(result);
 
 			for (size_t i = 1; i < expr_add.group.size(); ++i)
 			{
@@ -267,17 +474,36 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 				if (!val)
 					throw 1;
 
-				if (val->type != EValueType::Int64)
+				if (result->type != val->type)
 					throw 1;
 
-				if (sign.literal == "+")
+				if (result->type == EValueType::I64)
 				{
-					std::static_pointer_cast<Int64Value>(result)->val += std::static_pointer_cast<Int64Value>(val)->val;
+					if (sign.literal == "+")
+					{
+						std::static_pointer_cast<I64Value>(result)->val += std::static_pointer_cast<I64Value>(val)->val;
+					}
+					else
+					if (sign.literal == "-")
+					{
+						std::static_pointer_cast<I64Value>(result)->val -= std::static_pointer_cast<I64Value>(val)->val;
+					}
 				}
 				else
-				if (sign.literal == "-")
+				if (result->type == EValueType::Str)
 				{
-					std::static_pointer_cast<Int64Value>(result)->val -= std::static_pointer_cast<Int64Value>(val)->val;
+					if (sign.literal == "+")
+					{
+						std::static_pointer_cast<StrValue>(result)->val += std::static_pointer_cast<StrValue>(val)->val;
+					}
+					else
+					{
+						throw 1;
+					}
+				}
+				else
+				{
+					throw 1;
 				}
 			}
 		}
@@ -297,7 +523,7 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 			if (!result)
 				throw 1;
 
-			if (result->type != EValueType::Int64)
+			if (result->type != EValueType::I64)
 				throw 1;
 
 			for (size_t i = 1; i < expr_mul.group.size(); ++i)
@@ -313,17 +539,17 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 				if (!val)
 					throw 1;
 
-				if (val->type != EValueType::Int64)
+				if (val->type != EValueType::I64)
 					throw 1;
 
 				if (sign.literal == "*")
 				{
-					std::static_pointer_cast<Int64Value>(result)->val *= std::static_pointer_cast<Int64Value>(val)->val;
+					std::static_pointer_cast<I64Value>(result)->val *= std::static_pointer_cast<I64Value>(val)->val;
 				}
 				else
 				if (sign.literal == "/")
 				{
-					std::static_pointer_cast<Int64Value>(result)->val /= std::static_pointer_cast<Int64Value>(val)->val;
+					std::static_pointer_cast<I64Value>(result)->val /= std::static_pointer_cast<I64Value>(val)->val;
 				}
 			}
 		}
@@ -351,6 +577,18 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 		{
 			const auto &expr_function = expr_primitive.group[0];
 			return evaluate_expr(expr_function, state);
+		}
+		else
+		if (expr_primitive.group[0].identifier == "kv_boolean")
+		{
+			const auto &kv_boolean = expr_primitive.group[0];
+			return evaluate_expr(kv_boolean, state);
+		}
+		else
+		if (expr_primitive.group[0].identifier == "str")
+		{
+			const auto &str = expr_primitive.group[0];
+			return evaluate_expr(str, state);
 		}
 		else
 		if (expr_primitive.group[0].identifier == "number")
@@ -382,10 +620,35 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 		}
 	}
 	else
+	if (par.identifier == "kv_boolean")
+	{
+		const auto &kv_boolean = par;
+		if (kv_boolean.group[0].identifier == "kv_false")
+		{
+			return state.create_bool(false);
+		}
+		else
+		if (kv_boolean.group[0].identifier == "kv_true")
+		{
+			return state.create_bool(true);
+		}
+		else
+		{
+			throw 1;
+		}
+	}
+	else
+	if (par.identifier == "str")
+	{
+		const auto &str = par;
+		const auto &str_$g0 = str.group[1];
+		return state.create_str(str_$g0.flatten());
+	}
+	else
 	if (par.identifier == "number")
 	{
 		const auto &number = par;
-		return std::static_pointer_cast<IValue>(state.create_int64(atoll(number.flatten().c_str())));
+		return state.create_i64(atoll(number.flatten().c_str()));
 	}
 	else
 	if (par.identifier == "token_path")
@@ -511,16 +774,16 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 
 		collect_captures(*l->expr_block, state, l->captures);
 
-		return std::static_pointer_cast<IValue>(l);
+		return l;
 	}
 	else
 	if (par.identifier == "expr_if")
 	{
 		const auto &expr_if = par;
-		const auto &expr_bool = expr_if.group[4];
+		const auto &expr = expr_if.group[4];
 		const auto &expr_block = expr_if.group[8];
 
-		auto res = evaluate_expr(expr_bool, state);
+		auto res = evaluate_expr(expr, state);
 
 		if (res->type != EValueType::Bool)
 			throw 1;
@@ -550,141 +813,6 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 		const auto &expr_bool = par;
 		const auto &expr_bool_compare = expr_bool.group[0];
 		return evaluate_expr(expr_bool_compare, state);
-	}
-	else
-	if (par.identifier == "expr_bool_compare")
-	{
-		const auto &expr_bool_compare = par;
-		const auto &expr_left = expr_bool_compare.group[0];
-		const auto &comparator = expr_bool_compare.group[2];
-		const auto &expr_right = expr_bool_compare.group[4];
-
-		std::string comparator_str = comparator.flatten();
-
-		const auto &get_numbers = [&]() -> std::pair<int64_t, int64_t> {
-			auto left = evaluate_expr(expr_left, state);
-
-			if (!left)
-				throw 1;
-
-			if (left->type != EValueType::Int64)
-				throw 1;
-
-			auto right = evaluate_expr(expr_right, state);
-
-			if (!right)
-				throw 1;
-
-			if (right->type != EValueType::Int64)
-				throw 1;
-
-			auto ileft = std::static_pointer_cast<Int64Value>(left)->val;
-			auto iright = std::static_pointer_cast<Int64Value>(right)->val;
-
-			return { ileft, iright };
-		};
-
-		if (comparator_str == "<=")
-		{
-			auto [ileft, iright] = get_numbers();
-			return state.create_bool(ileft <= iright);
-		}
-		else
-		if (comparator_str == ">=")
-		{
-			auto [ileft, iright] = get_numbers();
-			return state.create_bool(ileft >= iright);
-		}
-		else
-		if (comparator_str == "<" )
-		{
-			auto [ileft, iright] = get_numbers();
-			return state.create_bool(ileft < iright);
-		}
-		else
-		if (comparator_str == ">")
-		{
-			auto [ileft, iright] = get_numbers();
-			return state.create_bool(ileft >= iright);
-		}
-		else
-		if (comparator_str == "==")
-		{
-			auto left = evaluate_expr(expr_left, state);
-			auto right = evaluate_expr(expr_right, state);
-
-			if (!left && !right)
-				return state.create_bool(true);
-
-			if (left->type != right->type)
-				return state.create_bool(false);
-
-			if (left->type == EValueType::Bool)
-			{
-				auto ileft = std::static_pointer_cast<BoolValue>(left)->val;
-				auto iright = std::static_pointer_cast<BoolValue>(right)->val;
-				
-				return state.create_bool(ileft == iright);
-			}
-			else
-			if (left->type == EValueType::Int64)
-			{
-				auto ileft = std::static_pointer_cast<Int64Value>(left)->val;
-				auto iright = std::static_pointer_cast<Int64Value>(right)->val;
-				
-				return state.create_bool(ileft == iright);
-			}
-			else
-			if (left->type == EValueType::Dict || left->type == EValueType::Lambda)
-			{
-				return state.create_bool(left.get() == right.get());
-			}
-			else
-			{
-				throw 1;
-			}
-		}
-		else
-		if (comparator_str == "!=")
-		{
-			auto left = evaluate_expr(expr_left, state);
-			auto right = evaluate_expr(expr_right, state);
-
-			if (!left != !right)
-				return state.create_bool(true);
-
-			if (left->type != right->type)
-				return state.create_bool(true);
-
-			if (left->type == EValueType::Bool)
-			{
-				auto ileft = std::static_pointer_cast<BoolValue>(left)->val;
-				auto iright = std::static_pointer_cast<BoolValue>(right)->val;
-				
-				return state.create_bool(ileft != iright);
-			}
-			else
-			if (left->type == EValueType::Int64)
-			{
-				auto ileft = std::static_pointer_cast<Int64Value>(left)->val;
-				auto iright = std::static_pointer_cast<Int64Value>(right)->val;
-				
-				return state.create_bool(ileft != iright);
-			}
-			else
-			if (left->type == EValueType::Dict || left->type == EValueType::Lambda)
-			{
-				return state.create_bool(left.get() != right.get());
-			}
-			else
-			{
-				throw 1;
-			}
-		}
-		else
-		{
-			throw 1;
-		}
 	}
 	else
 	if (par.identifier == "expr_block")
@@ -864,15 +992,94 @@ void evaluate_root(const mylang::$$Parsed &root)
 			if (i != 0)
 				std::cout << " ";
 
-			if (args[i]->type == EValueType::Int64)
-				std::cout << std::static_pointer_cast<Int64Value>(args[i])->val;
-			else // TODO
+			if (args[i]->type == EValueType::Bool)
+				std::cout << (std::static_pointer_cast<BoolValue>(args[i])->val ? "true" : "false");
+			else
+			if (args[i]->type == EValueType::Str)
+				std::cout << std::static_pointer_cast<StrValue>(args[i])->val;
+			else
+			if (args[i]->type == EValueType::I64)
+				std::cout << std::static_pointer_cast<I64Value>(args[i])->val;
+			else
 				std::cout << "IValue{" << (void *)args[i].get() << "}";
 		}
 
 		std::cout << "\n";
 
 		return {};
+	});
+
+	state.create_static_lambda({"std","bool"}, [](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> ivalue_t {
+		if (args.size() != 1)
+			throw 1;
+
+		if (args[0]->type == EValueType::Bool)
+		{
+			return state.create_bool(std::static_pointer_cast<BoolValue>(args[0])->val);
+		}
+		else
+		if (args[0]->type == EValueType::Str)
+		{
+			// return state.create_bool(std::static_pointer_cast<StrValue>(args[0])->val.c_str());
+			throw 1;
+		}
+		else
+		if (args[0]->type == EValueType::I64)
+		{
+			return state.create_bool(std::static_pointer_cast<I64Value>(args[0])->val != 0);
+		}
+		else
+		{
+			throw 1;
+		}
+	});
+
+	state.create_static_lambda({"std","str"}, [](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> ivalue_t {
+		if (args.size() != 1)
+			throw 1;
+
+		if (args[0]->type == EValueType::Bool)
+		{
+			return state.create_str(std::static_pointer_cast<BoolValue>(args[0]) ? "true" : "false");
+		}
+		else
+		if (args[0]->type == EValueType::Str)
+		{
+			return state.create_str(std::static_pointer_cast<StrValue>(args[0])->val.c_str());
+		}
+		else
+		if (args[0]->type == EValueType::I64)
+		{
+			return state.create_str(std::to_string(std::static_pointer_cast<I64Value>(args[0])->val));
+		}
+		else
+		{
+			throw 1;
+		}
+	});
+
+	state.create_static_lambda({"std","i64"}, [](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> ivalue_t {
+		if (args.size() != 1)
+			throw 1;
+
+		if (args[0]->type == EValueType::Bool)
+		{
+			return state.create_i64(std::static_pointer_cast<BoolValue>(args[0]) ? 1 : 0);
+		}
+		else
+		if (args[0]->type == EValueType::Str)
+		{
+			return state.create_i64(atoll(std::static_pointer_cast<StrValue>(args[0])->val.c_str()));
+		}
+		else
+		if (args[0]->type == EValueType::I64)
+		{
+			return state.create_i64(std::static_pointer_cast<I64Value>(args[0])->val);
+		}
+		else
+		{
+			throw 1;
+		}
 	});
 
 	state.create_static_lambda({"std","dict"}, [](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> ivalue_t {
@@ -920,10 +1127,12 @@ void mylang_main(int argc, const char **argv)
 	{
 		std::unordered_map<std::string, std::string> colors;
 		colors["token"] = "\033[96m";
+		colors["str"] = "\033[91m";
 		colors["number"] = "\033[92m";
 		colors["kv_return"] = "\033[95m";
 		colors["kv_let"] = "\033[94m";
 		colors["kv_mut"] = "\033[94m";
+		colors["kv_boolean"] = "\033[94m";
 		colors["kv_if"] = "\033[95m";
 		colors["kv_else"] = "\033[95m";
 		std::cout << "--- code begin ---\n" << mylang::helpers::ansii_colored(result.value(), colors, "\033[0m") << "--- code end ---\n";

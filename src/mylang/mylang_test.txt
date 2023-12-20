@@ -1,4 +1,18 @@
 
+std.print(
+	false,
+	"hello",
+	234,
+	"var = " + std.str(34),
+	"var = " + std.str(true),
+	true == std.bool(4),
+	std.i64(true)
+);
+
+let s = "hello";
+std.print(s + " world");
+std.print(s, "world");
+
 std.print(|a, b| { return a + b; }(1, 2));
 
 let mut mut_var = 3;
