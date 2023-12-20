@@ -16,6 +16,10 @@ ws: "\n" | "\r" | " " | "\t"
 
 kv_return: "return"
 
+kv_if: "if"
+
+kv_else: "else"
+
 letter: letter_lower | letter_upper
 
 number_hex: "0x" digit_hex+
@@ -35,17 +39,23 @@ token_path: token ((ws*) "." (ws*) token)*
 
 expr_function: "|" (ws*) (token (ws*) ("," (ws*) token (ws*))*)? "|" (ws*) expr_block
 
-expr_block: "{" (ws*) (statement (ws*))* "}"
+expr_block: "{" (ws*) (statement (ws*))* (expr (ws*))? "}"
 
 expr_call: (token_path | expr_group | expr_function) (ws*) "(" (ws*) (expr (ws*) ("," (ws*) expr (ws*))*)? ")"
 
 expr_group: "(" (ws*) expr (ws*) ")"
 
-expr_primitive: expr_call | expr_function | number | token_path | expr_group
+expr_primitive: expr_if | expr_call | expr_function | number | token_path | expr_group
 
 expr_mul: expr_primitive ((ws*) ("*" | "/") (ws*) expr_primitive)*
 
 expr_add: expr_mul ((ws*) ("+" | "-") (ws*) expr_mul)*
+
+expr_bool_compare: expr (ws*) ("<=" | ">=" | "<" | ">" | "==" | "!=") (ws*) expr
+
+expr_bool: expr_bool_compare
+
+expr_if: kv_if (ws*) "(" (ws*) expr_bool (ws*) ")" (ws*) expr_block ((ws*) kv_else (ws*) expr_block)?
 
 expr: expr_add
 
@@ -56,7 +66,9 @@ statement_return: kv_return (ws+) expr (ws*) ";"
 
 statement_expr: expr (ws*) ";"
 
-statement: statement_assign | statement_return | statement_expr
+statement_if: expr_if
+
+statement: statement_assign | statement_return | statement_expr | statement_if
 
 
 root: (ws*) (statement (ws*))*

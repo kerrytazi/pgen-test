@@ -24,6 +24,7 @@ using variables_t = std::unordered_map<std::string, std::shared_ptr<IValue>>;
 
 enum class EValueType
 {
+	Bool,
 	Int64,
 	Dict,
 	Lambda,
@@ -40,6 +41,11 @@ template <EValueType _TYPE>
 struct IValueTyped : IValue
 {
 	IValueTyped() : IValue(_TYPE) {}
+};
+
+struct BoolValue : IValueTyped<EValueType::Bool>
+{
+	bool val = false;
 };
 
 struct Int64Value : IValueTyped<EValueType::Int64>
@@ -60,6 +66,7 @@ struct LambdaValue : IValueTyped<EValueType::Lambda>
 	variables_t captures;
 };
 
+using vbool_t = std::shared_ptr<BoolValue>;
 using vint64_t = std::shared_ptr<Int64Value>;
 using vdict_t = std::shared_ptr<DictValue>;
 using vlambda_t = std::shared_ptr<LambdaValue>;
@@ -79,6 +86,13 @@ struct State
 
 	std::vector<StateFunction> function_scopes;
 	ivalue_t last_return;
+
+	vbool_t create_bool(bool val)
+	{
+		auto i = std::make_shared<BoolValue>();
+		i->val = val;
+		return i;
+	}
 
 	vint64_t create_int64(int64_t val)
 	{
@@ -313,7 +327,13 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 	if (par.identifier == "expr_primitive")
 	{
 		const auto &expr_primitive = par;
-
+		
+		if (expr_primitive.group[0].identifier == "expr_if")
+		{
+			const auto &expr_if = expr_primitive.group[0];
+			return evaluate_expr(expr_if, state);
+		}
+		else
 		if (expr_primitive.group[0].identifier == "expr_call")
 		{
 			const auto &expr_call = expr_primitive.group[0];
@@ -447,25 +467,14 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 
 			const auto *expr_block = lambda->expr_block;
 
-			for (size_t i = 1; i < expr_block->group.size() - 1; ++i)
-			{
-				if (expr_block->group[i].identifier == "expr_block_$g1")
-				{
-					const auto &expr_block_g1 = expr_block->group[i];
-					const auto &statement = expr_block_g1.group[0];
-					evaluate_statement(statement, state);
-				}
-			}
-
-			ivalue_t last_return = state.last_return;
-			state.last_return = {};
+			auto result = evaluate_expr(*expr_block, state);
 
 			{
 				assert(state.function_scopes.back().blocks.size() == 2);
 				state.function_scopes.back().blocks.clear();
 			}
 
-			return last_return;
+			return result;
 		});
 
 		if (const auto *expr_function_$g1 = expr_function.find("expr_function_$g1"))
@@ -490,6 +499,219 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 		collect_captures(*l->expr_block, state, l->captures);
 
 		return std::static_pointer_cast<IValue>(l);
+	}
+	else
+	if (par.identifier == "expr_if")
+	{
+		const auto &expr_if = par;
+		const auto &expr_bool = expr_if.group[4];
+		const auto &expr_block = expr_if.group[8];
+
+		auto res = evaluate_expr(expr_bool, state);
+
+		if (res->type != EValueType::Bool)
+			throw 1;
+
+		auto bool_res = std::static_pointer_cast<BoolValue>(res)->val;
+
+		if (bool_res)
+		{
+			return evaluate_expr(expr_block, state);
+		}
+		else
+		{
+			if (const auto *expr_if_$g4 = expr_if.find("expr_if_$g4"))
+			{
+				const auto &expr_block = expr_if_$g4->group[3];
+				return evaluate_expr(expr_block, state);
+			}
+			else
+			{
+				return {};
+			}
+		}
+	}
+	else
+	if (par.identifier == "expr_bool")
+	{
+		const auto &expr_bool = par;
+		const auto &expr_bool_compare = expr_bool.group[0];
+		return evaluate_expr(expr_bool_compare, state);
+	}
+	else
+	if (par.identifier == "expr_bool_compare")
+	{
+		const auto &expr_bool_compare = par;
+		const auto &expr_left = expr_bool_compare.group[0];
+		const auto &comparator = expr_bool_compare.group[2];
+		const auto &expr_right = expr_bool_compare.group[4];
+
+		std::string comparator_str = comparator.flatten();
+
+		const auto &get_numbers = [&]() -> std::pair<int64_t, int64_t> {
+			auto left = evaluate_expr(expr_left, state);
+
+			if (!left)
+				throw 1;
+
+			if (left->type != EValueType::Int64)
+				throw 1;
+
+			auto right = evaluate_expr(expr_right, state);
+
+			if (!right)
+				throw 1;
+
+			if (right->type != EValueType::Int64)
+				throw 1;
+
+			auto ileft = std::static_pointer_cast<Int64Value>(left)->val;
+			auto iright = std::static_pointer_cast<Int64Value>(right)->val;
+
+			return { ileft, iright };
+		};
+
+		if (comparator_str == "<=")
+		{
+			auto [ileft, iright] = get_numbers();
+			return state.create_bool(ileft <= iright);
+		}
+		else
+		if (comparator_str == ">=")
+		{
+			auto [ileft, iright] = get_numbers();
+			return state.create_bool(ileft >= iright);
+		}
+		else
+		if (comparator_str == "<" )
+		{
+			auto [ileft, iright] = get_numbers();
+			return state.create_bool(ileft < iright);
+		}
+		else
+		if (comparator_str == ">")
+		{
+			auto [ileft, iright] = get_numbers();
+			return state.create_bool(ileft >= iright);
+		}
+		else
+		if (comparator_str == "==")
+		{
+			auto left = evaluate_expr(expr_left, state);
+			auto right = evaluate_expr(expr_right, state);
+
+			if (!left && !right)
+				return state.create_bool(true);
+
+			if (left->type != right->type)
+				return state.create_bool(false);
+
+			if (left->type == EValueType::Bool)
+			{
+				auto ileft = std::static_pointer_cast<BoolValue>(left)->val;
+				auto iright = std::static_pointer_cast<BoolValue>(right)->val;
+				
+				return state.create_bool(ileft == iright);
+			}
+			else
+			if (left->type == EValueType::Int64)
+			{
+				auto ileft = std::static_pointer_cast<Int64Value>(left)->val;
+				auto iright = std::static_pointer_cast<Int64Value>(right)->val;
+				
+				return state.create_bool(ileft == iright);
+			}
+			else
+			if (left->type == EValueType::Dict || left->type == EValueType::Lambda)
+			{
+				return state.create_bool(left.get() == right.get());
+			}
+			else
+			{
+				throw 1;
+			}
+		}
+		else
+		if (comparator_str == "!=")
+		{
+			auto left = evaluate_expr(expr_left, state);
+			auto right = evaluate_expr(expr_right, state);
+
+			if (!left != !right)
+				return state.create_bool(true);
+
+			if (left->type != right->type)
+				return state.create_bool(true);
+
+			if (left->type == EValueType::Bool)
+			{
+				auto ileft = std::static_pointer_cast<BoolValue>(left)->val;
+				auto iright = std::static_pointer_cast<BoolValue>(right)->val;
+				
+				return state.create_bool(ileft != iright);
+			}
+			else
+			if (left->type == EValueType::Int64)
+			{
+				auto ileft = std::static_pointer_cast<Int64Value>(left)->val;
+				auto iright = std::static_pointer_cast<Int64Value>(right)->val;
+				
+				return state.create_bool(ileft != iright);
+			}
+			else
+			if (left->type == EValueType::Dict || left->type == EValueType::Lambda)
+			{
+				return state.create_bool(left.get() != right.get());
+			}
+			else
+			{
+				throw 1;
+			}
+		}
+		else
+		{
+			throw 1;
+		}
+	}
+	else
+	if (par.identifier == "expr_block")
+	{
+		const auto &expr_block = par;
+
+		{
+			assert(state.function_scopes.size() > 0);
+			state.function_scopes.back().blocks.emplace_back();
+		}
+
+		auto scope_layer = state.function_scopes.back().blocks.size();
+
+		for (size_t i = 1; i < expr_block.group.size() - 1; ++i)
+		{
+			if (expr_block.group[i].identifier == "expr_block_$g1")
+			{
+				const auto &expr_block_g1 = expr_block.group[i];
+				const auto &statement = expr_block_g1.group[0];
+				evaluate_statement(statement, state);
+			}
+		}
+
+		// TODO
+		ivalue_t result = state.last_return;
+		state.last_return = {};
+
+		if (const auto *expr_block_$g2 = expr_block.find("expr_block_$g2"))
+		{
+			const auto &expr = expr_block_$g2->group[0];
+			result = evaluate_expr(expr, state);
+		}
+
+		{
+			assert(state.function_scopes.size() > 0);
+			assert(state.function_scopes.back().blocks.size() == scope_layer);
+			state.function_scopes.back().blocks.pop_back();
+		}
+
+		return result;
 	}
 	else
 	{
@@ -561,6 +783,14 @@ void evaluate_statement(const mylang::$$Parsed &statement, State &state)
 		const auto &statement_expr = statement.group[0];
 		const auto &expr = statement_expr.group[0];
 		auto result = evaluate_expr(expr, state);
+		(void)result;
+	}
+	else
+	if (statement.group[0].identifier == "statement_if")
+	{
+		const auto &statement_if = statement.group[0];
+		const auto &expr_if = statement_if.group[0];
+		auto result = evaluate_expr(expr_if, state);
 		(void)result;
 	}
 	else
@@ -643,6 +873,8 @@ void mylang_main(int argc, const char **argv)
 		colors["token"] = "\033[96m";
 		colors["number"] = "\033[92m";
 		colors["kv_return"] = "\033[95m";
+		colors["kv_if"] = "\033[95m";
+		colors["kv_else"] = "\033[95m";
 		std::cout << "--- code begin ---\n" << mylang::helpers::ansii_colored(result.value(), colors, "\033[0m") << "--- code end ---\n";
 	}
 

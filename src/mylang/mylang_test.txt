@@ -1,4 +1,20 @@
 
+a = if (2 < 3) { 1 } else { 2 };
+
+std.print(a);
+
+if (2 < 3) {
+	std.print(1);
+} else {
+	std.print(2);
+}
+
+if (2 > 3) {
+	std.print(1);
+} else {
+	std.print(2);
+}
+
 test1 = |a, b, c| {
 	test2 = || { return a + a * b + b; };
 	return test2() + || { return (a + a) * (b + b); }();
