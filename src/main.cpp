@@ -328,11 +328,11 @@ a * (b + c) + d;
 
 } // namespace test_
 
-extern void mylang_main();
+extern void mylang_main(int argc, const char **argv);
 
-int main()
+int main(int argc, const char **argv)
 {
 	// test_::test1();
 	// test_::test2();
-	mylang_main();
+	mylang_main(argc, argv);
 }

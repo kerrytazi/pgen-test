@@ -12,7 +12,9 @@ letter_upper: "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J" | "K" | 
 
 letter_lower: "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "i" | "j" | "k" | "l" | "m" | "n" | "o" | "p" | "q" | "r" | "s" | "t" | "u" | "v" | "w" | "x" | "y" | "z"
 
-^ws: "\n" | "\r" | " " | "\t"
+ws: "\n" | "\r" | " " | "\t"
+
+kv_return: "return"
 
 letter: letter_lower | letter_upper
 
@@ -28,33 +30,33 @@ number: number_hex | number_decimal | number_octal | number_binary
 
 token: (letter | "_") (letter | digit_decimal | "_")*
 
-token_path: token (ws* "." ws* token)*
+token_path: token ((ws*) "." (ws*) token)*
 
 
-expr_function: "|" ws* (token_path ws* ("," ws* token_path ws*)*)? "|" ws* expr_block
+expr_function: "|" (ws*) (token (ws*) ("," (ws*) token (ws*))*)? "|" (ws*) expr_block
 
-expr_block: "{" ws* (statement ws*)* "}"
+expr_block: "{" (ws*) (statement (ws*))* "}"
 
-expr_call: (token_path | expr_group) ws* "(" ws* (expr ws* ("," ws* expr ws*)*)? ")"
+expr_call: (token_path | expr_group | expr_function) (ws*) "(" (ws*) (expr (ws*) ("," (ws*) expr (ws*))*)? ")"
 
-expr_group: "(" ws* expr ws* ")"
+expr_group: "(" (ws*) expr (ws*) ")"
 
-expr_primitive: expr_call | number | token_path | expr_group
+expr_primitive: expr_call | expr_function | number | token_path | expr_group
 
-expr_mul: expr_primitive (ws* ("*" | "/") ws* expr_primitive)*
+expr_mul: expr_primitive ((ws*) ("*" | "/") (ws*) expr_primitive)*
 
-expr_add: expr_mul (ws* ("+" | "-") ws* expr_mul)*
+expr_add: expr_mul ((ws*) ("+" | "-") (ws*) expr_mul)*
 
-expr: expr_function | expr_add
+expr: expr_add
 
 
-statement_assign: token_path ws* "=" ws* expr ws* ";"
+statement_assign: token_path (ws*) "=" (ws*) expr (ws*) ";"
 
-statement_return: "return" ws+ expr ws* ";"
+statement_return: kv_return (ws+) expr (ws*) ";"
 
-statement_expr: expr ws* ";"
+statement_expr: expr (ws*) ";"
 
 statement: statement_assign | statement_return | statement_expr
 
 
-root: (ws* statement)* ws*
+root: (ws*) (statement (ws*))*

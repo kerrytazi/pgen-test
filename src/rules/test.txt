@@ -11,7 +11,7 @@ letter_upper: "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J" | "K" | 
 
 letter_lower: "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "i" | "j" | "k" | "l" | "m" | "n" | "o" | "p" | "q" | "r" | "s" | "t" | "u" | "v" | "w" | "x" | "y" | "z"
 
-^ws: "\n" | "\r" | " " | "\t"
+ws: "\n" | "\r" | " " | "\t"
 
 letter: letter_lower | letter_upper
 

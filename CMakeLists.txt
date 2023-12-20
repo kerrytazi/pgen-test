@@ -49,6 +49,7 @@ set(PROJECT_SOURCES
 
 	src/rules/mylang.txt
 	src/gen/mylang.hpp
+	src/mylang/mylang_test.txt
 )
 
 ADD_MSVC_PRECOMPILED_HEADER("src" "pch.hpp" "pch.cpp" PROJECT_SOURCES)

@@ -3,6 +3,8 @@
 #include "gen/mylang.hpp"
 
 #include <iostream>
+#include <fstream>
+#include <sstream>
 #include <cassert>
 #include <bit>
 #include <memory>
@@ -195,22 +197,8 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 	if (par.identifier == "expr")
 	{
 		const auto &expr = par;
-
-		if (expr.group[0].identifier == "expr_function")
-		{
-			const auto &expr_function = expr.group[0];
-			return evaluate_expr(expr_function, state);
-		}
-		else
-		if (expr.group[0].identifier == "expr_add")
-		{
-			const auto &expr_add = expr.group[0];
-			return evaluate_expr(expr_add, state);
-		}
-		else
-		{
-			throw 1;
-		}
+		const auto &expr_add = expr.group[0];
+		return evaluate_expr(expr_add, state);
 	}
 	else
 	if (par.identifier == "expr_add")
@@ -231,10 +219,10 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 			for (size_t i = 1; i < expr_add.group.size(); ++i)
 			{
 				const auto &expr_add_$g0 = expr_add.group[i];
-				const auto &expr_add_$g0_$g0 = expr_add_$g0.group[0];
+				const auto &expr_add_$g0_$g1 = expr_add_$g0.group[1];
 
-				const auto &sign = expr_add_$g0_$g0.group[0];
-				const auto &expr_mul = expr_add_$g0.group[1];
+				const auto &sign = expr_add_$g0_$g1.group[0];
+				const auto &expr_mul = expr_add_$g0.group[3];
 
 				auto val = evaluate_expr(expr_mul, state);
 
@@ -277,10 +265,10 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 			for (size_t i = 1; i < expr_mul.group.size(); ++i)
 			{
 				const auto &expr_mul_$g0 = expr_mul.group[i];
-				const auto &expr_mul_$g0_$g0 = expr_mul_$g0.group[0];
+				const auto &expr_mul_$g0_$g1 = expr_mul_$g0.group[1];
 
-				const auto &sign = expr_mul_$g0_$g0.group[0];
-				const auto &expr_primitive = expr_mul_$g0.group[1];
+				const auto &sign = expr_mul_$g0_$g1.group[0];
+				const auto &expr_primitive = expr_mul_$g0.group[3];
 
 				auto val = evaluate_expr(expr_primitive, state);
 
@@ -313,6 +301,12 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 		{
 			const auto &expr_call = expr_primitive.group[0];
 			return evaluate_expr(expr_call, state);
+		}
+		else
+		if (expr_primitive.group[0].identifier == "expr_function")
+		{
+			const auto &expr_function = expr_primitive.group[0];
+			return evaluate_expr(expr_function, state);
 		}
 		else
 		if (expr_primitive.group[0].identifier == "number")
@@ -353,7 +347,7 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 	if (par.identifier == "expr_group")
 	{
 		const auto &expr_group = par;
-		const auto &expr = expr_group.group[1];
+		const auto &expr = expr_group.group[2];
 		return evaluate_expr(expr, state);
 	}
 	else
@@ -370,10 +364,16 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 			func = evaluate_token_path(token_path, state, false);
 		}
 		else
-		if (expr_call_$g0.identifier == "expr_group")
+		if (expr_call_$g0.group[0].identifier == "expr_group")
 		{
 			const auto &expr_group = expr_call_$g0.group[0];
 			func = evaluate_expr(expr_group, state);
+		}
+		else
+		if (expr_call_$g0.group[0].identifier == "expr_function")
+		{
+			const auto &expr_function = expr_call_$g0.group[0];
+			func = evaluate_expr(expr_function, state);
 		}
 		else
 		{
@@ -382,17 +382,20 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 
 		std::vector<ivalue_t> args;
 
-		if (const auto *expr_call_$g1 = expr_call.find("expr_call_$g1"))
+		if (const auto *expr_call_$g3 = expr_call.find("expr_call_$g3"))
 		{
-			const auto &expr = expr_call_$g1->group[0];
+			const auto &expr = expr_call_$g3->group[0];
 			args.push_back(evaluate_expr(expr, state));
 
-			for (size_t i = 1; i < expr_call_$g1->group.size(); ++i)
+			for (size_t i = 1; i < expr_call_$g3->group.size(); ++i)
 			{
-				const auto &expr_call_$g1_$g0 = expr_call_$g1->group[i];
+				if (expr_call_$g3->group[i].identifier == "expr_call_$g3_$g1")
+				{
+					const auto &expr_call_$g3_$g1 = expr_call_$g3->group[i];
 
-				const auto &expr = expr_call_$g1_$g0.group[1];
-				args.push_back(evaluate_expr(expr, state));
+					const auto &expr = expr_call_$g3_$g1.group[2];
+					args.push_back(evaluate_expr(expr, state));
+				}
 			}
 		}
 
@@ -415,9 +418,12 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 
 			for (size_t i = 1; i < expr_block->group.size() - 1; ++i)
 			{
-				const auto &expr_block_g0 = expr_block->group[i];
-				const auto &statement = expr_block_g0.group[0];
-				evaluate_statement(statement, state);
+				if (expr_block->group[i].identifier == "expr_block_$g1")
+				{
+					const auto &expr_block_g1 = expr_block->group[i];
+					const auto &statement = expr_block_g1.group[0];
+					evaluate_statement(statement, state);
+				}
 			}
 
 			ivalue_t last_return = state.last_return;
@@ -426,16 +432,19 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 			return last_return;
 		});
 
-		if (const auto *expr_function_$g0 = expr_function.find("expr_function_$g0"))
+		if (const auto *expr_function_$g1 = expr_function.find("expr_function_$g1"))
 		{
-			const auto &token_path = expr_function_$g0->group[0];
-			l->args.push_back(token_path.flatten());
+			const auto &token = expr_function_$g1->group[0];
+			l->args.push_back(token.flatten());
 
-			for (size_t i = 1; i < expr_function_$g0->group.size(); ++i)
+			for (size_t i = 1; i < expr_function_$g1->group.size(); ++i)
 			{
-				const auto &expr_function_$g0_$g0 = expr_function_$g0->group[i];
-				const auto &token_path = expr_function_$g0_$g0.group[1];
-				l->args.push_back(token_path.flatten());
+				if (expr_function_$g1->group[i].identifier == "expr_function_$g1_$g1")
+				{
+					const auto &expr_function_$g1_$g1 = expr_function_$g1->group[i];
+					const auto &token = expr_function_$g1_$g1.group[2];
+					l->args.push_back(token.flatten());
+				}
 			}
 		}
 
@@ -461,7 +470,7 @@ ivalue_t &evaluate_token_path(const mylang::$$Parsed &token_path, State &state, 
 	for (size_t i = 1; i < token_path.group.size(); ++i)
 	{
 		const auto &token_path_$g0 = token_path.group[i];
-		const auto &token = token_path_$g0.group[1];
+		const auto &token = token_path_$g0.group[3];
 
 		if (it == vars->end())
 			throw 1;
@@ -493,7 +502,7 @@ void evaluate_statement(const mylang::$$Parsed &statement, State &state)
 	{
 		const auto &statement_assign = statement.group[0];
 		const auto &token_path = statement_assign.group[0];
-		const auto &expr = statement_assign.group[2];
+		const auto &expr = statement_assign.group[4];
 
 		auto result = evaluate_expr(expr, state);
 		evaluate_token_path(token_path, state, true) = result;
@@ -502,7 +511,7 @@ void evaluate_statement(const mylang::$$Parsed &statement, State &state)
 	if (statement.group[0].identifier == "statement_return")
 	{
 		const auto &statement_return = statement.group[0];
-		const auto &expr = statement_return.group[1];
+		const auto &expr = statement_return.group[2];
 
 		state.last_return = evaluate_expr(expr, state);
 	}
@@ -553,9 +562,12 @@ void evaluate_root(const mylang::$$Parsed &root)
 
 	for (size_t i = 0; i < root.group.size(); ++i)
 	{
-		const auto &root_$g0 = root.group[i];
-		const auto &statement = root_$g0.group[0];
-		evaluate_statement(statement, state);
+		if (root.group[i].identifier == "root_$g1")
+		{
+			const auto &root_$g1 = root.group[i];
+			const auto &statement = root_$g1.group[0];
+			evaluate_statement(statement, state);
+		}
 	}
 
 	assert(state.function_scopes.size() == 1);
@@ -565,62 +577,17 @@ void evaluate_root(const mylang::$$Parsed &root)
 
 } // namespace vm
 
-void mylang_main()
+std::string read_file(const char *filename)
 {
-	std::string_view text;
-
-if (0)
-{
-text = R"AAA(
-
-a = 3;
-b = 4;
-c = 5;
-d = 6;
-
-std.print(a + b * c + d);
-std.print(a + b * (c + d));
-std.print((a + b) * c + d);
-std.print((a + b) * (c + d));
-
-
-)AAA";
+	std::ifstream f(filename);
+	std::stringstream buffer;
+	buffer << f.rdbuf();
+	return buffer.str();
 }
 
-if (0)
+void mylang_main(int argc, const char **argv)
 {
-text = R"AAA(
-
-myprint = std.print;
-myprint(myprint);
-
-)AAA";
-}
-
-if (1)
-{
-text = R"AAA(
-
-
-dict = std.dict();
-
-dict.std = std;
-
-dict.my_mul = |dict, a, b| { return a * b; };
-
-dict.my_mul_sum = |dict, a, b, c| {
-	return dict.my_mul(dict, a, b) + c;
-};
-
-dict.my_mul_sum_print = |dict, a, b, c| {
-	result = dict.my_mul_sum(dict, 2, 3, 4);
-	dict.std.print(result);
-};
-
-dict.my_mul_sum_print(dict, 2, 3, 4);
-
-)AAA";
-}
+	std::string text = read_file("../src/mylang/mylang_test.txt");
 
 	const char *s = text.data();
 	const char *e = s + text.size();
@@ -630,6 +597,14 @@ dict.my_mul_sum_print(dict, 2, 3, 4);
 	// std::cout << mylang::helpers::generate_graphviz(result.value());
 
 	int b = 0;
+
+	{
+		std::unordered_map<std::string, std::string> colors;
+		colors["token"] = "\033[96m";
+		colors["number"] = "\033[92m";
+		colors["kv_return"] = "\033[95m";
+		std::cout << mylang::helpers::ansii_colored(result.value(), colors, "\033[0m") << "\n";
+	}
 
 	vm::evaluate_root(result.value());
 
