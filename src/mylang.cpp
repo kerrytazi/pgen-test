@@ -22,7 +22,7 @@ using ivalue_t = std::shared_ptr<IValue>;
 using lambda_ptr_t = ivalue_t(*)(const LambdaValue *lambda, const std::vector<ivalue_t> &args, State &state);
 using variables_t = std::unordered_map<std::string, std::shared_ptr<IValue>>;
 
-enum class EValueType
+enum class EValueType : uint8_t
 {
 	Bool,
 	Int64,
@@ -33,6 +33,7 @@ enum class EValueType
 struct IValue
 {
 	EValueType type;
+	bool const_value = false;
 	IValue(EValueType _type) : type{_type} {}
 	virtual ~IValue() {}
 };
@@ -81,7 +82,7 @@ struct State
 	struct StateFunction
 	{
 		std::string name;
-		std::vector<StateBlock> blocks;
+		std::vector<std::unique_ptr<StateBlock>> blocks;
 	};
 
 	std::vector<StateFunction> function_scopes;
@@ -108,7 +109,7 @@ struct State
 		return l;
 	}
 
-	vlambda_t create_lambda(std::initializer_list<std::string> path, lambda_ptr_t lambda)
+	vlambda_t create_static_lambda(std::initializer_list<std::string> path, lambda_ptr_t lambda)
 	{
 		assert(path.size() > 0);
 
@@ -142,7 +143,7 @@ struct State
 		assert(function_scopes.size() > 0);
 		assert(function_scopes[0].blocks.size() > 0);
 
-		return function_scopes.back().blocks.back().variables[name];
+		return function_scopes.back().blocks.back()->variables[name];
 	}
 
 	std::pair<ivalue_t *, StateBlock *> find_variable_with_block(const std::string &name)
@@ -155,13 +156,13 @@ struct State
 
 		for (auto it = blocks.rbegin(); it != blocks.rend(); ++it)
 		{
-			if (auto v = it->variables.find(name); v != it->variables.end())
+			if (auto v = (*it)->variables.find(name); v != (*it)->variables.end())
 			{
-				return { &v->second, &*it };
+				return { &v->second, &**it };
 			}
 		}
 
-		return { {}, &blocks.back() };
+		return { {}, blocks.back().get() };
 	}
 
 	ivalue_t find_variable(const std::string &name)
@@ -173,7 +174,10 @@ struct State
 	}
 };
 
-ivalue_t &evaluate_token_path(const mylang::$$Parsed &statement, State &state, bool declare);
+[[nodiscard]]
+ivalue_t evaluate_expr_block(const mylang::$$Parsed& expr_block, State& state, bool new_scope);
+[[nodiscard]]
+ivalue_t &evaluate_token_path(const mylang::$$Parsed &statement, State &state, bool assign);
 void evaluate_statement(const mylang::$$Parsed &statement, State &state);
 
 void collect_captures(const mylang::$$Parsed &par, State &state, variables_t &captures)
@@ -193,6 +197,7 @@ void collect_captures(const mylang::$$Parsed &par, State &state, variables_t &ca
 	}
 }
 
+[[nodiscard]]
 ivalue_t evaluate_call(ivalue_t func, const std::vector<ivalue_t> &args, State &state)
 {
 	if (!func)
@@ -203,6 +208,7 @@ ivalue_t evaluate_call(ivalue_t func, const std::vector<ivalue_t> &args, State &
 
 	ivalue_t result;
 
+	[[maybe_unused]]
 	auto func_layer = state.function_scopes.size() + 1;
 
 	{
@@ -223,6 +229,7 @@ ivalue_t evaluate_call(ivalue_t func, const std::vector<ivalue_t> &args, State &
 	return result;
 }
 
+[[nodiscard]]
 ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 {
 	if (par.identifier == "expr")
@@ -352,6 +359,12 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 			return evaluate_expr(number, state);
 		}
 		else
+		if (expr_primitive.group[0].identifier == "expr_assign")
+		{
+			const auto &expr_assign = expr_primitive.group[0];
+			return evaluate_expr(expr_assign, state);
+		}
+		else
 		if (expr_primitive.group[0].identifier == "token_path")
 		{
 			const auto &token_path = expr_primitive.group[0];
@@ -372,7 +385,7 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 	if (par.identifier == "number")
 	{
 		const auto &number = par;
-		return std::static_pointer_cast<IValue>(state.create_int64(atoi(number.flatten().c_str())));
+		return std::static_pointer_cast<IValue>(state.create_int64(atoll(number.flatten().c_str())));
 	}
 	else
 	if (par.identifier == "token_path")
@@ -452,22 +465,22 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 				assert(state.function_scopes.size() > 0);
 
 				{
-					auto &captures_block = state.function_scopes.back().blocks.emplace_back();
+					auto &captures_block = state.function_scopes.back().blocks.emplace_back(std::make_unique<State::StateBlock>());
 
-					captures_block.variables = lambda->captures;
+					captures_block->variables = lambda->captures;
 				}
 
 				{
-					auto &arguments_block = state.function_scopes.back().blocks.emplace_back();
+					auto &arguments_block = state.function_scopes.back().blocks.emplace_back(std::make_unique<State::StateBlock>());
 
 					for (size_t i = 0; i < args.size(); ++i)
-						arguments_block.variables.insert({ lambda->args[i], args[i] });
+						arguments_block->variables.insert({ lambda->args[i], args[i] });
 				}
 			}
 
 			const auto *expr_block = lambda->expr_block;
 
-			auto result = evaluate_expr(*expr_block, state);
+			auto result = evaluate_expr_block(*expr_block, state, false);
 
 			{
 				assert(state.function_scopes.back().blocks.size() == 2);
@@ -676,50 +689,72 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 	else
 	if (par.identifier == "expr_block")
 	{
-		const auto &expr_block = par;
-
-		{
-			assert(state.function_scopes.size() > 0);
-			state.function_scopes.back().blocks.emplace_back();
-		}
-
-		auto scope_layer = state.function_scopes.back().blocks.size();
-
-		for (size_t i = 1; i < expr_block.group.size() - 1; ++i)
-		{
-			if (expr_block.group[i].identifier == "expr_block_$g1")
-			{
-				const auto &expr_block_g1 = expr_block.group[i];
-				const auto &statement = expr_block_g1.group[0];
-				evaluate_statement(statement, state);
-			}
-		}
-
-		// TODO
-		ivalue_t result = state.last_return;
-		state.last_return = {};
-
-		if (const auto *expr_block_$g2 = expr_block.find("expr_block_$g2"))
-		{
-			const auto &expr = expr_block_$g2->group[0];
-			result = evaluate_expr(expr, state);
-		}
-
-		{
-			assert(state.function_scopes.size() > 0);
-			assert(state.function_scopes.back().blocks.size() == scope_layer);
-			state.function_scopes.back().blocks.pop_back();
-		}
-
-		return result;
+		const auto& expr_block = par;
+		return evaluate_expr_block(expr_block, state, true);
 	}
 	else
+	if (par.identifier == "expr_assign")
 	{
-		throw 1;
+		const auto& expr_assign = par;
+		const auto& token_path = expr_assign.group[0];
+		const auto& expr = expr_assign.group[4];
+
+		auto &res = evaluate_token_path(token_path, state, true);
+
+		if (res && res->const_value)
+			throw 1;
+
+		return res = evaluate_expr(expr, state);
 	}
+
+	throw 1;
 }
 
-ivalue_t &evaluate_token_path(const mylang::$$Parsed &token_path, State &state, bool declare)
+[[nodiscard]]
+ivalue_t evaluate_expr_block(const mylang::$$Parsed &expr_block, State &state, bool new_scope)
+{
+	[[maybe_unused]]
+	size_t scope_layer = 0;
+
+	if (new_scope)
+	{
+		assert(state.function_scopes.size() > 0);
+		state.function_scopes.back().blocks.emplace_back(std::make_unique<State::StateBlock>());
+		scope_layer = state.function_scopes.back().blocks.size();
+	}
+
+	for (size_t i = 1; i < expr_block.group.size() - 1; ++i)
+	{
+		if (expr_block.group[i].identifier == "expr_block_$g1")
+		{
+			const auto& expr_block_g1 = expr_block.group[i];
+			const auto& statement = expr_block_g1.group[0];
+			evaluate_statement(statement, state);
+		}
+	}
+
+	// TODO
+	ivalue_t result = state.last_return;
+	state.last_return = {};
+
+	if (const auto* expr_block_$g2 = expr_block.find("expr_block_$g2"))
+	{
+		const auto& expr = expr_block_$g2->group[0];
+		result = evaluate_expr(expr, state);
+	}
+
+	if (new_scope)
+	{
+		assert(state.function_scopes.size() > 0);
+		assert(state.function_scopes.back().blocks.size() == scope_layer);
+		state.function_scopes.back().blocks.pop_back();
+	}
+
+	return result;
+}
+
+[[nodiscard]]
+ivalue_t &evaluate_token_path(const mylang::$$Parsed &token_path, State &state, bool assign)
 {
 	const auto &token = token_path.group[0];
 
@@ -749,7 +784,7 @@ ivalue_t &evaluate_token_path(const mylang::$$Parsed &token_path, State &state, 
 
 	if (!val)
 	{
-		if (!declare)
+		if (!assign || token_path.group.size() == 1)
 			throw 1;
 
 		val = &vars->insert({ tok, {} }).first->second;
@@ -760,14 +795,28 @@ ivalue_t &evaluate_token_path(const mylang::$$Parsed &token_path, State &state, 
 
 void evaluate_statement(const mylang::$$Parsed &statement, State &state)
 {
-	if (statement.group[0].identifier == "statement_assign")
+	if (statement.group[0].identifier == "statement_let")
 	{
 		const auto &statement_assign = statement.group[0];
-		const auto &token_path = statement_assign.group[0];
-		const auto &expr = statement_assign.group[4];
+		const auto &statement_assign_$g1 = statement_assign.group[2];
+		const auto &token = statement_assign.group[3];
+		const auto &expr = statement_assign.group[7];
 
-		auto result = evaluate_expr(expr, state);
-		evaluate_token_path(token_path, state, true) = result;
+		assert(state.function_scopes.size() > 0);
+		assert(state.function_scopes.back().blocks.size() > 0);
+
+		if (auto insert_result = state.function_scopes.back().blocks.back()->variables.insert({ token.flatten(), {} }); insert_result.second)
+		{
+			ivalue_t &res = insert_result.first->second;
+			res = evaluate_expr(expr, state);
+
+			if (statement_assign_$g1.group.size() == 0 && res)
+				res->const_value = true;
+		}
+		else
+		{
+			throw 1;
+		}
 	}
 	else
 	if (statement.group[0].identifier == "statement_return")
@@ -806,10 +855,10 @@ void evaluate_root(const mylang::$$Parsed &root)
 	{
 		auto &func = state.function_scopes.emplace_back();
 		func.name = "<global>";
-		func.blocks.emplace_back();
+		func.blocks.emplace_back(std::make_unique<State::StateBlock>());
 	}
 
-	state.create_lambda({"std","print"}, [](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> ivalue_t {
+	state.create_static_lambda({"std","print"}, [](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> ivalue_t {
 		for (size_t i = 0; i < args.size(); ++i)
 		{
 			if (i != 0)
@@ -826,7 +875,7 @@ void evaluate_root(const mylang::$$Parsed &root)
 		return {};
 	});
 
-	state.create_lambda({"std","dict"}, [](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> ivalue_t {
+	state.create_static_lambda({"std","dict"}, [](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> ivalue_t {
 		return state.create_dict();
 	});
 
@@ -873,6 +922,8 @@ void mylang_main(int argc, const char **argv)
 		colors["token"] = "\033[96m";
 		colors["number"] = "\033[92m";
 		colors["kv_return"] = "\033[95m";
+		colors["kv_let"] = "\033[94m";
+		colors["kv_mut"] = "\033[94m";
 		colors["kv_if"] = "\033[95m";
 		colors["kv_else"] = "\033[95m";
 		std::cout << "--- code begin ---\n" << mylang::helpers::ansii_colored(result.value(), colors, "\033[0m") << "--- code end ---\n";

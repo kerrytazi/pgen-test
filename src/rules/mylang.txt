@@ -16,6 +16,10 @@ ws: "\n" | "\r" | " " | "\t"
 
 kv_return: "return"
 
+kv_let: "let"
+
+kv_mut: "mut"
+
 kv_if: "if"
 
 kv_else: "else"
@@ -45,7 +49,7 @@ expr_call: (token_path | expr_group | expr_function) (ws*) "(" (ws*) (expr (ws*)
 
 expr_group: "(" (ws*) expr (ws*) ")"
 
-expr_primitive: expr_if | expr_call | expr_function | number | token_path | expr_group
+expr_primitive: expr_if | expr_call | expr_function | number | expr_assign | token_path | expr_group
 
 expr_mul: expr_primitive ((ws*) ("*" | "/") (ws*) expr_primitive)*
 
@@ -57,10 +61,12 @@ expr_bool: expr_bool_compare
 
 expr_if: kv_if (ws*) "(" (ws*) expr_bool (ws*) ")" (ws*) expr_block ((ws*) kv_else (ws*) expr_block)?
 
+expr_assign: token_path (ws*) "=" (ws*) expr
+
 expr: expr_add
 
 
-statement_assign: token_path (ws*) "=" (ws*) expr (ws*) ";"
+statement_let: kv_let (ws+) ((kv_mut ws+)?) token (ws*) "=" (ws*) expr (ws*) ";"
 
 statement_return: kv_return (ws+) expr (ws*) ";"
 
@@ -68,7 +74,7 @@ statement_expr: expr (ws*) ";"
 
 statement_if: expr_if
 
-statement: statement_assign | statement_return | statement_expr | statement_if
+statement: statement_let | statement_return | statement_expr | statement_if
 
 
 root: (ws*) (statement (ws*))*

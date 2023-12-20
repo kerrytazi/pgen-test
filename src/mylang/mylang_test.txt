@@ -1,6 +1,15 @@
 
-a = if (2 < 3) { 1 } else { 2 };
+std.print(|a, b| { return a + b; }(1, 2));
 
+let mut mut_var = 3;
+mut_var = mut_var + 4;
+std.print(mut_var);
+
+let b = std.dict();
+b.c = 123;
+std.print(b.c);
+
+let a = if (2 < 3) { 1 } else { 2 };
 std.print(a);
 
 if (2 < 3) {
@@ -15,15 +24,15 @@ if (2 > 3) {
 	std.print(2);
 }
 
-test1 = |a, b, c| {
-	test2 = || { return a + a * b + b; };
-	return test2() + || { return (a + a) * (b + b); }();
+let capture_test = |a, b, c| {
+	let test = || { return a + a * b + b; };
+	return test() + || { return (a + a) * (b + b); }();
 };
 
-test33 = |a, b, c| {
-	result = test1(a, b, c);
+let lambda_capture_test = |a, b, c| {
+	let result = capture_test(a, b, c);
 	std.print(result);
 };
 
-test33(2, 3, 4);
+lambda_capture_test(2, 3, 4);
 
