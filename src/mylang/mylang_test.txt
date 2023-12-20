@@ -1,32 +1,13 @@
 
-
-test_math = || {
-	a = 3;
-	b = 4;
-	c = 5;
-	d = 6;
-
-	std.print(a + b * c + d);
-	std.print(a + b * (c + d));
-	std.print((a + b) * c + d);
-	std.print((a + b) * (c + d));
+test1 = |a, b, c| {
+	test2 = || { return a + a * b + b; };
+	return test2() + || { return (a + a) * (b + b); }();
 };
 
-
-dict = std.dict();
-
-dict.std = std;
-
-dict.my_mul = |dict, a, b| { return a * b; };
-
-dict.my_mul_sum = |dict, a, b, c| {
-	return dict.my_mul(dict, a, b) + c;
+test33 = |a, b, c| {
+	result = test1(a, b, c);
+	std.print(result);
 };
 
-dict.my_mul_sum_print = |dict, a, b, c| {
-	result = dict.my_mul_sum(dict, 2, 3, 4);
-	dict.std.print(result);
-};
-
-dict.my_mul_sum_print(dict, 2, 3, 4);
+test33(2, 3, 4);
 
