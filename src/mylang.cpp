@@ -971,6 +971,34 @@ void evaluate_statement(const mylang::$$Parsed &statement, State &state)
 		(void)result;
 	}
 	else
+	if (statement.group[0].identifier == "statement_while")
+	{
+		const auto &statement_while = statement.group[0];
+		const auto &expr = statement_while.group[4];
+		const auto &expr_block = statement_while.group[8];
+
+		auto res = evaluate_expr(expr, state);
+
+		if (!res || res->type != EValueType::Bool)
+			throw 1;
+
+		auto bool_res = std::static_pointer_cast<BoolValue>(res)->val;
+
+		while (bool_res)
+		{
+			evaluate_expr_block(expr_block, state, true);
+
+			{
+				res = evaluate_expr(expr, state);
+
+				if (!res || res->type != EValueType::Bool)
+					throw 1;
+
+				bool_res = std::static_pointer_cast<BoolValue>(res)->val;
+			}
+		}
+	}
+	else
 	{
 		throw 1;
 	}
@@ -1134,6 +1162,7 @@ void mylang_main(int argc, const char **argv)
 		colors["kv_mut"] = "\033[94m";
 		colors["kv_boolean"] = "\033[94m";
 		colors["kv_if"] = "\033[95m";
+		colors["kv_while"] = "\033[95m";
 		colors["kv_else"] = "\033[95m";
 		std::cout << "--- code begin ---\n" << mylang::helpers::ansii_colored(result.value(), colors, "\033[0m") << "--- code end ---\n";
 	}

@@ -22,6 +22,8 @@ kv_let: "let"
 
 kv_mut: "mut"
 
+kv_while: "while"
+
 kv_if: "if"
 
 kv_else: "else"
@@ -81,7 +83,9 @@ statement_expr: expr (ws*) ";"
 
 statement_if: expr_if
 
-statement: statement_let | statement_return | statement_expr | statement_if
+statement_while: kv_while (ws*) "(" (ws*) expr (ws*) ")" (ws*) expr_block
+
+statement: statement_let | statement_return | statement_expr | statement_if | statement_while
 
 
 root: (ws*) (statement (ws*))*

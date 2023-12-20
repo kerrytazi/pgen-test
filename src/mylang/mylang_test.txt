@@ -1,4 +1,11 @@
 
+let mut counter = 0;
+
+while (counter < 10) {
+	std.print(counter);
+	counter = counter + 1;
+}
+
 std.print(
 	false,
 	"hello",
