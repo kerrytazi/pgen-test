@@ -13,3 +13,4 @@
 #include <memory>
 #include <unordered_set>
 #include <ranges>
+#include <functional>

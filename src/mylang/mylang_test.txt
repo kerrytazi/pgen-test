@@ -84,3 +84,7 @@ let lambda_capture_test = |a, b, c| {
 
 lambda_capture_test(2, 3, 4);
 
+let on_user_update = |num, str| {
+	std.print("from on_user_update, num = " + std.str(num) + ", str = \"" + str + "\"");
+};
+

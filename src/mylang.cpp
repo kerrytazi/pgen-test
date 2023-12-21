@@ -351,6 +351,94 @@ ivalue_t &evaluate_token_path(const mylang::$$Parsed &statement, State &state, b
 [[nodiscard]]
 fivalue_t evaluate_statement(const mylang::$$Parsed &statement, State &state);
 
+void fix_tree(mylang::$$Parsed &par)
+{
+	if (par.identifier == "str")
+	{
+		auto &str = par;
+		auto &str_$g0 = str.group[1];
+
+		str_$g0.literal = replace_str(str_$g0.flatten(), "\\\"", "\"");
+		str_$g0.type = mylang::$$ParsedType::Literal;
+		str_$g0.group.clear();
+	}
+	else
+	{
+		for (auto &v : par.group)
+			fix_tree(v);
+	}
+}
+
+void optimize_tree(mylang::$$Parsed &par)
+{
+	if (par.identifier == "expr")
+	{
+		auto tmp = par.group[0];
+		par = tmp;
+	}
+
+	if (par.identifier == "expr_bool_compare")
+	{
+		if (par.group.size() == 1)
+		{
+			auto tmp = par.group[0];
+			par = tmp;
+		}
+	}
+
+	if (par.identifier == "expr_add")
+	{
+		if (par.group.size() == 1)
+		{
+			auto tmp = par.group[0];
+			par = tmp;
+		}
+	}
+
+	if (par.identifier == "expr_mul")
+	{
+		if (par.group.size() == 1)
+		{
+			auto tmp = par.group[0];
+			par = tmp;
+		}
+	}
+
+	if (par.identifier == "expr_primitive")
+	{
+		if (par.group.size() == 1)
+		{
+			auto tmp = par.group[0];
+			par = tmp;
+		}
+	}
+
+	if (par.identifier == "expr_group")
+	{
+		auto tmp = par.group[2];
+		par = tmp;
+	}
+	
+	if (par.identifier == "token")
+	{
+		auto &token = par;
+		token.literal = token.flatten();
+		token.type = mylang::$$ParsedType::Literal;
+		token.group.clear();
+	}
+
+	if (par.identifier == "number")
+	{
+		auto &number = par;
+		number.literal = number.flatten();
+		number.type = mylang::$$ParsedType::Literal;
+		number.group.clear();
+	}
+
+	for (auto &v : par.group)
+		optimize_tree(v);
+}
+
 void collect_captures(const mylang::$$Parsed &par, State &state, variables_t &captures)
 {
 	if (par.identifier == "token_path")
@@ -1333,7 +1421,13 @@ fivalue_t evaluate_statement(const mylang::$$Parsed &statement, State &state)
 	}
 }
 
-void evaluate_root(const mylang::$$Parsed &root)
+struct RunParams
+{
+	std::function<void(State &state)> before_run;
+	std::function<void(State &state)> after_run;
+};
+
+void run(const mylang::$$Parsed &root, const RunParams &params = {})
 {
 	assert(root.identifier == "root");
 
@@ -1482,6 +1576,9 @@ void evaluate_root(const mylang::$$Parsed &root)
 		return flow_unchanged(state.create_bool((bool)args[0]));
 	});
 
+	if (params.before_run)
+		params.before_run(state);
+
 	for (size_t i = 0; i < root.group.size(); ++i)
 	{
 		if (root.group[i].identifier == "root_$g1")
@@ -1495,6 +1592,9 @@ void evaluate_root(const mylang::$$Parsed &root)
 				throw 1;
 		}
 	}
+
+	if (params.after_run)
+		params.after_run(state);
 
 	assert(state.function_scopes.size() == 1);
 	assert(state.function_scopes[0].blocks.size() == 1);
@@ -1511,9 +1611,9 @@ void mylang_main(int argc, const char **argv)
 	const char *s = text.data();
 	const char *e = s + text.size();
 
-	auto result = mylang::$parse_root(s, e);
+	auto result = mylang::$parse_root(s, e).value();
 
-	// std::cout << mylang::helpers::generate_graphviz(result.value());
+	// std::cout << mylang::helpers::generate_graphviz(result);
 
 	int b = 0;
 
@@ -1531,11 +1631,36 @@ void mylang_main(int argc, const char **argv)
 		colors["kv_if"] = "\033[95m";
 		colors["kv_while"] = "\033[95m";
 		colors["kv_else"] = "\033[95m";
-		std::cout << "--- code begin ---\n" << mylang::helpers::ansii_colored(result.value(), colors, "\033[0m") << "--- code end ---\n";
+		std::cout << "--- code begin ---\n" << mylang::helpers::ansii_colored(result, colors, "\033[0m") << "--- code end ---\n";
 	}
 
 	std::cout << "--- program begin ---\n";
-	vm::evaluate_root(result.value());
+
+	{
+		vm::RunParams params;
+
+		params.before_run = [](vm::State &state) {
+		};
+
+		params.after_run = [](vm::State &state) {
+			auto &vars = state.function_scopes[0].blocks[0]->variables;
+
+			if (auto on_user_update_it = vars.find("on_user_update"); on_user_update_it != vars.end())
+			{
+				auto on_user_update = on_user_update_it->second;
+
+				if (on_user_update->type != vm::EValueType::Lambda)
+					throw 1;
+
+				vm::evaluate_call(on_user_update, { state.create_i64(123), state.create_str("hello") }, state);
+			}
+		};
+
+		vm::fix_tree(result);
+		vm::optimize_tree(result);
+		vm::run(result, params);
+	}
+
 	std::cout << "--- program end ---\n";
 
 	int a = 0;
