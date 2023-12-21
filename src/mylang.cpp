@@ -11,16 +11,53 @@
 #include <unordered_set>
 #include <ranges>
 
+
+std::string replace_str(std::string str, const std::string& from, const std::string& to) {
+	if (from.empty())
+		return str;
+
+	size_t start_pos = 0;
+
+	while ((start_pos = str.find(from, start_pos)) != std::string::npos) {
+		str.replace(start_pos, from.length(), to);
+		start_pos += to.length(); // In case 'to' contains 'from', like replacing 'x' with 'yx'
+	}
+
+	return str;
+}
+
+std::string read_file(const char *filename)
+{
+	std::ifstream f(filename);
+	std::stringstream buffer;
+	buffer << f.rdbuf();
+	return buffer.str();
+}
+
 namespace vm
 {
 
 struct IValue;
 struct State;
 struct LambdaValue;
+enum class EFlowChange;
 
 using ivalue_t = std::shared_ptr<IValue>;
-using lambda_ptr_t = ivalue_t(*)(const LambdaValue *lambda, const std::vector<ivalue_t> &args, State &state);
+using fivalue_t = std::pair<ivalue_t, EFlowChange>;
+using lambda_ptr_t = fivalue_t(*)(const LambdaValue *lambda, const std::vector<ivalue_t> &args, State &state);
 using variables_t = std::unordered_map<std::string, std::shared_ptr<IValue>>;
+
+
+[[maybe_unused]]
+const int _EFlowChangeVersion = 4;
+
+enum class EFlowChange
+{
+	None,
+	Return,
+	Continue,
+	Break,
+};
 
 [[maybe_unused]]
 const int _EValueTypeVersion = 5;
@@ -86,6 +123,24 @@ using vlambda_t = std::shared_ptr<LambdaValue>;
 
 static_assert(_EValueTypeVersion == 5, "EValueType: check shortcut");
 
+#define flow_checked(var, expr) \
+		auto _##var##_pair = expr; \
+		if (_##var##_pair.second != EFlowChange::None) \
+			return _##var##_pair; \
+		auto var = _##var##_pair.first
+
+#define flow_unchanged(expr) \
+	fivalue_t{ expr, EFlowChange::None }
+
+template <typename TFunc>
+struct ExitScope
+{
+	TFunc func;
+
+	ExitScope(const TFunc &_func) : func(_func) {}
+	~ExitScope() { func(); }
+};
+
 struct State
 {
 	struct StateBlock
@@ -100,7 +155,11 @@ struct State
 	};
 
 	std::vector<StateFunction> function_scopes;
-	ivalue_t last_return;
+
+	int allow_continue = false;
+	int allow_break = false;
+
+	bool debug = false;
 
 	vbool_t create_bool(bool val)
 	{
@@ -195,6 +254,10 @@ struct State
 		{
 			return v;
 		}
+		else
+		{
+			throw 1;
+		}
 	}
 
 	ivalue_t shallow_copy(ivalue_t v)
@@ -286,10 +349,11 @@ struct State
 };
 
 [[nodiscard]]
-ivalue_t evaluate_expr_block(const mylang::$$Parsed& expr_block, State& state, bool new_scope);
+fivalue_t evaluate_expr_block(const mylang::$$Parsed &expr_block, State &state, bool new_scope);
 [[nodiscard]]
 ivalue_t &evaluate_token_path(const mylang::$$Parsed &statement, State &state, bool assign);
-void evaluate_statement(const mylang::$$Parsed &statement, State &state);
+[[nodiscard]]
+fivalue_t evaluate_statement(const mylang::$$Parsed &statement, State &state);
 
 void collect_captures(const mylang::$$Parsed &par, State &state, variables_t &captures)
 {
@@ -309,40 +373,71 @@ void collect_captures(const mylang::$$Parsed &par, State &state, variables_t &ca
 }
 
 [[nodiscard]]
-ivalue_t evaluate_call(ivalue_t func, const std::vector<ivalue_t> &args, State &state)
+fivalue_t evaluate_call(ivalue_t func, const std::vector<ivalue_t> &args, State &state)
 {
+	if (state.debug)
+		std::cout << "[debug] " << "evaluate_call" << "\n";
+
 	if (!func)
 		throw 1;
 
 	if (func->type != EValueType::Lambda)
 		throw 1;
 
-	ivalue_t result;
-
 	[[maybe_unused]]
-	auto func_layer = state.function_scopes.size() + 1;
+	const auto func_layer = state.function_scopes.size() + 1;
 
 	{
 		state.function_scopes.emplace_back();
 	}
 
+	ExitScope _onexit([&]() {
+		{
+			assert(state.function_scopes.size() == func_layer);
+			assert(state.function_scopes.back().blocks.size() == 0);
+			state.function_scopes.pop_back();
+		}
+	});
+
+	auto save_allow_continue = state.allow_continue;
+	auto save_allow_break = state.allow_break;
+
+	state.allow_continue = 0;
+	state.allow_break = 0;
+
+	ExitScope _onexit2([&]() {
+		state.allow_continue = save_allow_continue;
+		state.allow_break = save_allow_break;
+	});
+
 	{
 		auto l = std::static_pointer_cast<LambdaValue>(func);
-		result = l->lambda_ptr(l.get(), args, state);
-	}
+		auto checked = l->lambda_ptr(l.get(), args, state);
 
-	{
-		assert(state.function_scopes.size() == func_layer);
-		assert(state.function_scopes.back().blocks.size() == 0);
-		state.function_scopes.pop_back();
-	}
+		static_assert(_EFlowChangeVersion == 4, "EFlowChange: check expr_call");
 
-	return result;
+		if (checked.second == EFlowChange::None)
+		{
+			return checked;
+		}
+		else
+		if (checked.second == EFlowChange::Return)
+		{
+			return flow_unchanged(checked.first);
+		}
+		else
+		{
+			throw 1;
+		}
+	}
 }
 
 [[nodiscard]]
-ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
+fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 {
+	if (state.debug)
+		std::cout << "[debug] " << "evaluate_expr: par = " << replace_str(par.flatten(), "\n", "") << "\n";
+
 	if (par.identifier == "expr")
 	{
 		const auto &expr = par;
@@ -355,7 +450,7 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 		const auto &expr_bool_compare = par;
 		const auto &expr_add_left = expr_bool_compare.group[0];
 
-		auto left = evaluate_expr(expr_add_left, state);
+		flow_checked(left, evaluate_expr(expr_add_left, state));
 
 		if (expr_bool_compare.group.size() > 1)
 		{
@@ -363,7 +458,7 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 			const auto &expr_bool_compare_$g0_$g1 = expr_bool_compare_$g0.group[1];
 			const auto expr_add_right = expr_bool_compare_$g0.group[3];
 
-			auto right = evaluate_expr(expr_add_right, state);
+			flow_checked(right, evaluate_expr(expr_add_right, state));
 
 			std::string comparator_str = expr_bool_compare_$g0_$g1.flatten();
 
@@ -391,34 +486,34 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 			if (comparator_str == "<=")
 			{
 				auto [ileft, iright] = get_numbers();
-				return state.create_bool(ileft <= iright);
+				return flow_unchanged(state.create_bool(ileft <= iright));
 			}
 			else
 			if (comparator_str == ">=")
 			{
 				auto [ileft, iright] = get_numbers();
-				return state.create_bool(ileft >= iright);
+				return flow_unchanged(state.create_bool(ileft >= iright));
 			}
 			else
-			if (comparator_str == "<" )
+			if (comparator_str == "<")
 			{
 				auto [ileft, iright] = get_numbers();
-				return state.create_bool(ileft < iright);
+				return flow_unchanged(state.create_bool(ileft < iright));
 			}
 			else
 			if (comparator_str == ">")
 			{
 				auto [ileft, iright] = get_numbers();
-				return state.create_bool(ileft >= iright);
+				return flow_unchanged(state.create_bool(ileft >= iright));
 			}
 			else
 			if (comparator_str == "==")
 			{
-				if (!left && !right)
-					return state.create_bool(true);
+				if (!left || !right)
+					return flow_unchanged(state.create_bool(false));
 
 				if (left->type != right->type)
-					return state.create_bool(false);
+					return flow_unchanged(state.create_bool(false));
 
 				static_assert(_EValueTypeVersion == 5, "EValueType: check compare - eq");
 
@@ -427,7 +522,7 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 					auto ileft = std::static_pointer_cast<BoolValue>(left)->val;
 					auto iright = std::static_pointer_cast<BoolValue>(right)->val;
 				
-					return state.create_bool(ileft == iright);
+					return flow_unchanged(state.create_bool(ileft == iright));
 				}
 				else
 				if (left->type == EValueType::Str)
@@ -435,7 +530,7 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 					auto ileft = std::static_pointer_cast<StrValue>(left)->val;
 					auto iright = std::static_pointer_cast<StrValue>(right)->val;
 				
-					return state.create_bool(ileft == iright);
+					return flow_unchanged(state.create_bool(ileft == iright));
 				}
 				else
 				if (left->type == EValueType::I64)
@@ -443,12 +538,12 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 					auto ileft = std::static_pointer_cast<I64Value>(left)->val;
 					auto iright = std::static_pointer_cast<I64Value>(right)->val;
 				
-					return state.create_bool(ileft == iright);
+					return flow_unchanged(state.create_bool(ileft == iright));
 				}
 				else
 				if (left->type == EValueType::Dict || left->type == EValueType::Lambda)
 				{
-					return state.create_bool(left.get() == right.get());
+					return flow_unchanged(state.create_bool(left.get() == right.get()));
 				}
 				else
 				{
@@ -458,11 +553,11 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 			else
 			if (comparator_str == "!=")
 			{
-				if (!left != !right)
-					return state.create_bool(true);
+				if (!left || !right)
+					return flow_unchanged(state.create_bool(false));
 
 				if (left->type != right->type)
-					return state.create_bool(true);
+					return flow_unchanged(state.create_bool(true));
 
 				static_assert(_EValueTypeVersion == 5, "EValueType: check compare - neq");
 
@@ -471,7 +566,7 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 					auto ileft = std::static_pointer_cast<BoolValue>(left)->val;
 					auto iright = std::static_pointer_cast<BoolValue>(right)->val;
 				
-					return state.create_bool(ileft != iright);
+					return flow_unchanged(state.create_bool(ileft != iright));
 				}
 				else
 				if (left->type == EValueType::Str)
@@ -479,7 +574,7 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 					auto ileft = std::static_pointer_cast<StrValue>(left)->val;
 					auto iright = std::static_pointer_cast<StrValue>(right)->val;
 				
-					return state.create_bool(ileft != iright);
+					return flow_unchanged(state.create_bool(ileft != iright));
 				}
 				else
 				if (left->type == EValueType::I64)
@@ -487,12 +582,12 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 					auto ileft = std::static_pointer_cast<I64Value>(left)->val;
 					auto iright = std::static_pointer_cast<I64Value>(right)->val;
 				
-					return state.create_bool(ileft != iright);
+					return flow_unchanged(state.create_bool(ileft != iright));
 				}
 				else
 				if (left->type == EValueType::Dict || left->type == EValueType::Lambda)
 				{
-					return state.create_bool(left.get() != right.get());
+					return flow_unchanged(state.create_bool(left.get() != right.get()));
 				}
 				else
 				{
@@ -505,7 +600,7 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 			}
 		}
 
-		return left;
+		return flow_unchanged(left);
 	}
 	else
 	if (par.identifier == "expr_add")
@@ -513,16 +608,16 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 		const auto &expr_add = par;
 		const auto &expr_mul = expr_add.group[0];
 
-		auto result = evaluate_expr(expr_mul, state);
+		flow_checked(left, evaluate_expr(expr_mul, state));
 
 		if (expr_add.group.size() > 1)
 		{
 			static_assert(_EValueTypeVersion == 5, "EValueType: check expr_add left");
 
-			if (!result)
+			if (!left)
 				throw 1;
 
-			result = state.shallow_copy(result);
+			left = state.shallow_copy(left);
 
 			for (size_t i = 1; i < expr_add.group.size(); ++i)
 			{
@@ -532,34 +627,34 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 				const auto &sign = expr_add_$g0_$g1.group[0];
 				const auto &expr_mul = expr_add_$g0.group[3];
 
-				auto val = evaluate_expr(expr_mul, state);
+				flow_checked(right, evaluate_expr(expr_mul, state));
 
-				if (!val)
+				if (!right)
 					throw 1;
 
-				if (result->type != val->type)
+				if (left->type != right->type)
 					throw 1;
 
 				static_assert(_EValueTypeVersion == 5, "EValueType: check expr_add right");
 
-				if (result->type == EValueType::I64)
+				if (left->type == EValueType::I64)
 				{
 					if (sign.literal == "+")
 					{
-						std::static_pointer_cast<I64Value>(result)->val += std::static_pointer_cast<I64Value>(val)->val;
+						std::static_pointer_cast<I64Value>(left)->val += std::static_pointer_cast<I64Value>(right)->val;
 					}
 					else
 					if (sign.literal == "-")
 					{
-						std::static_pointer_cast<I64Value>(result)->val -= std::static_pointer_cast<I64Value>(val)->val;
+						std::static_pointer_cast<I64Value>(left)->val -= std::static_pointer_cast<I64Value>(right)->val;
 					}
 				}
 				else
-				if (result->type == EValueType::Str)
+				if (left->type == EValueType::Str)
 				{
 					if (sign.literal == "+")
 					{
-						std::static_pointer_cast<StrValue>(result)->val += std::static_pointer_cast<StrValue>(val)->val;
+						std::static_pointer_cast<StrValue>(left)->val += std::static_pointer_cast<StrValue>(right)->val;
 					}
 					else
 					{
@@ -573,7 +668,7 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 			}
 		}
 
-		return result;
+		return flow_unchanged(left);
 	}
 	else
 	if (par.identifier == "expr_mul")
@@ -581,16 +676,16 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 		const auto &expr_mul = par;
 		const auto &expr_primitive = expr_mul.group[0];
 
-		auto result = evaluate_expr(expr_primitive, state);
+		flow_checked(left, evaluate_expr(expr_primitive, state));
 
 		if (expr_mul.group.size() > 1)
 		{
 			static_assert(_EValueTypeVersion == 5, "EValueType: check expr_mul left");
 
-			if (!result)
+			if (!left)
 				throw 1;
 
-			if (result->type != EValueType::I64)
+			if (left->type != EValueType::I64)
 				throw 1;
 
 			for (size_t i = 1; i < expr_mul.group.size(); ++i)
@@ -601,29 +696,29 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 				const auto &sign = expr_mul_$g0_$g1.group[0];
 				const auto &expr_primitive = expr_mul_$g0.group[3];
 
-				auto val = evaluate_expr(expr_primitive, state);
+				flow_checked(right, evaluate_expr(expr_primitive, state));
 
-				if (!val)
+				if (!right)
 					throw 1;
 
-				if (val->type != EValueType::I64)
+				if (right->type != EValueType::I64)
 					throw 1;
 
 				static_assert(_EValueTypeVersion == 5, "EValueType: check expr_mul right");
 
 				if (sign.literal == "*")
 				{
-					std::static_pointer_cast<I64Value>(result)->val *= std::static_pointer_cast<I64Value>(val)->val;
+					std::static_pointer_cast<I64Value>(left)->val *= std::static_pointer_cast<I64Value>(right)->val;
 				}
 				else
 				if (sign.literal == "/")
 				{
-					std::static_pointer_cast<I64Value>(result)->val /= std::static_pointer_cast<I64Value>(val)->val;
+					std::static_pointer_cast<I64Value>(left)->val /= std::static_pointer_cast<I64Value>(right)->val;
 				}
 			}
 		}
 
-		return result;
+		return flow_unchanged(left);
 	}
 	else
 	if (par.identifier == "expr_primitive")
@@ -634,6 +729,12 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 		{
 			const auto &expr_if = expr_primitive.group[0];
 			return evaluate_expr(expr_if, state);
+		}
+		else
+		if (expr_primitive.group[0].identifier == "expr_while")
+		{
+			const auto &expr_while = expr_primitive.group[0];
+			return evaluate_expr(expr_while, state);
 		}
 		else
 		if (expr_primitive.group[0].identifier == "expr_call")
@@ -700,12 +801,12 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 		const auto &kv_boolean = par;
 		if (kv_boolean.group[0].identifier == "kv_false")
 		{
-			return state.create_bool(false);
+			return flow_unchanged(state.create_bool(false));
 		}
 		else
 		if (kv_boolean.group[0].identifier == "kv_true")
 		{
-			return state.create_bool(true);
+			return flow_unchanged(state.create_bool(true));
 		}
 		else
 		{
@@ -717,19 +818,19 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 	{
 		const auto &str = par;
 		const auto &str_$g0 = str.group[1];
-		return state.create_str(str_$g0.flatten());
+		return flow_unchanged(state.create_str(str_$g0.flatten()));
 	}
 	else
 	if (par.identifier == "number")
 	{
 		const auto &number = par;
-		return state.create_i64(atoll(number.flatten().c_str()));
+		return flow_unchanged(state.create_i64(atoll(number.flatten().c_str())));
 	}
 	else
 	if (par.identifier == "token_path")
 	{
 		const auto &token_path = par;
-		return evaluate_token_path(token_path, state, false);
+		return flow_unchanged(evaluate_token_path(token_path, state, false));
 	}
 	else
 	if (par.identifier == "expr_group")
@@ -755,13 +856,15 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 		if (expr_call_$g0.group[0].identifier == "expr_group")
 		{
 			const auto &expr_group = expr_call_$g0.group[0];
-			func = evaluate_expr(expr_group, state);
+			flow_checked(cheked, evaluate_expr(expr_group, state));
+			func = cheked;
 		}
 		else
 		if (expr_call_$g0.group[0].identifier == "expr_function")
 		{
 			const auto &expr_function = expr_call_$g0.group[0];
-			func = evaluate_expr(expr_function, state);
+			flow_checked(cheked, evaluate_expr(expr_function, state));
+			func = cheked;
 		}
 		else
 		{
@@ -773,7 +876,8 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 		if (const auto *expr_call_$g3 = expr_call.find("expr_call_$g3"))
 		{
 			const auto &expr = expr_call_$g3->group[0];
-			args.push_back(evaluate_expr(expr, state));
+			flow_checked(cheked, evaluate_expr(expr, state));
+			args.push_back(cheked);
 
 			for (size_t i = 1; i < expr_call_$g3->group.size(); ++i)
 			{
@@ -782,7 +886,8 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 					const auto &expr_call_$g3_$g1 = expr_call_$g3->group[i];
 
 					const auto &expr = expr_call_$g3_$g1.group[2];
-					args.push_back(evaluate_expr(expr, state));
+					flow_checked(cheked, evaluate_expr(expr, state));
+					args.push_back(cheked);
 				}
 			}
 		}
@@ -794,7 +899,7 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 	{
 		const auto &expr_function = par;
 
-		auto l = state.create_lambda([](const LambdaValue *lambda, const std::vector<ivalue_t> &args, State &state) -> ivalue_t {
+		auto l = state.create_lambda([](const LambdaValue *lambda, const std::vector<ivalue_t> &args, State &state) -> fivalue_t {
 
 			if (lambda->args.size() != args.size())
 				throw 1;
@@ -849,7 +954,7 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 
 		collect_captures(*l->expr_block, state, l->captures);
 
-		return l;
+		return flow_unchanged(l);
 	}
 	else
 	if (par.identifier == "expr_if")
@@ -858,7 +963,7 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 		const auto &expr = expr_if.group[4];
 		const auto &expr_block = expr_if.group[8];
 
-		auto res = evaluate_expr(expr, state);
+		flow_checked(res, evaluate_expr(expr, state));
 
 		if (res->type != EValueType::Bool)
 			throw 1;
@@ -874,12 +979,110 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 			if (const auto *expr_if_$g4 = expr_if.find("expr_if_$g4"))
 			{
 				const auto &expr_block = expr_if_$g4->group[3];
-				return evaluate_expr(expr_block, state);
+				return evaluate_expr_block(expr_block, state, true);
 			}
 			else
 			{
-				return {};
+				return flow_unchanged({});
 			}
+		}
+	}
+	else
+	if (par.identifier == "expr_while")
+	{
+		const auto &expr_while = par;
+		const auto &expr = expr_while.group[4];
+		const auto &expr_block = expr_while.group[8];
+
+		bool bool_res = false;
+
+		{
+			auto save_allow_continue = state.allow_continue;
+			auto save_allow_break = state.allow_break;
+
+			state.allow_continue = 0;
+			state.allow_break = 0;
+
+			ExitScope _onexit([&]() {
+				state.allow_continue = save_allow_continue;
+				state.allow_break = save_allow_break;
+			});
+
+			flow_checked(res, evaluate_expr(expr, state));
+
+			if (!res || res->type != EValueType::Bool)
+				throw 1;
+
+			bool_res = std::static_pointer_cast<BoolValue>(res)->val;
+		}
+
+		++state.allow_continue;
+		++state.allow_break;
+
+		ExitScope _onexit([&]() {
+			--state.allow_continue;
+			--state.allow_break;
+		});
+
+		while (bool_res)
+		{
+			static_assert(_EFlowChangeVersion == 4, "EFlowChange: check while block");
+
+			auto checked = evaluate_expr_block(expr_block, state, true);
+
+			if (checked.second == EFlowChange::None)
+			{
+				// intentionally empty
+			}
+			else
+			if (checked.second == EFlowChange::Return)
+			{
+				return checked;
+			}
+			else
+			if (checked.second == EFlowChange::Continue)
+			{
+				// intentionally empty
+			}
+			else
+			if (checked.second == EFlowChange::Break)
+			{
+				return flow_unchanged(checked.first);
+			}
+			else
+			{
+				throw 1;
+			}
+
+			{
+				auto save_allow_continue = state.allow_continue;
+				auto save_allow_break = state.allow_break;
+
+				state.allow_continue = 0;
+				state.allow_break = 0;
+
+				ExitScope _onexit([&]() {
+					state.allow_continue = save_allow_continue;
+					state.allow_break = save_allow_break;
+				});
+
+				flow_checked(res, evaluate_expr(expr, state));
+
+				if (!res || res->type != EValueType::Bool)
+					throw 1;
+
+				bool_res = std::static_pointer_cast<BoolValue>(res)->val;
+			}
+		}
+
+		if (const auto *expr_while_$g4 = expr_while.find("expr_while_$g4"))
+		{
+			const auto &expr_block = expr_while_$g4->group[3];
+			return evaluate_expr(expr_block, state);
+		}
+		else
+		{
+			return flow_unchanged({});
 		}
 	}
 	else
@@ -892,30 +1095,36 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 	else
 	if (par.identifier == "expr_block")
 	{
-		const auto& expr_block = par;
+		const auto &expr_block = par;
 		return evaluate_expr_block(expr_block, state, true);
 	}
 	else
 	if (par.identifier == "expr_assign")
 	{
-		const auto& expr_assign = par;
-		const auto& token_path = expr_assign.group[0];
-		const auto& expr = expr_assign.group[4];
+		const auto &expr_assign = par;
+		const auto &token_path = expr_assign.group[0];
+		const auto &expr = expr_assign.group[4];
 
 		auto &res = evaluate_token_path(token_path, state, true);
+
+		auto aaa = token_path.flatten();
 
 		if (res && res->const_value)
 			throw 1;
 
-		return res = state.refval_copy(evaluate_expr(expr, state));
+		flow_checked(checked, evaluate_expr(expr, state));
+		return flow_unchanged(res = state.refval_copy(checked));
 	}
 
 	throw 1;
 }
 
 [[nodiscard]]
-ivalue_t evaluate_expr_block(const mylang::$$Parsed &expr_block, State &state, bool new_scope)
+fivalue_t evaluate_expr_block(const mylang::$$Parsed &expr_block, State &state, bool new_scope)
 {
+	if (state.debug)
+		std::cout << "[debug] " << "evaluate_expr_block, expr_bloc = " << replace_str(expr_block.flatten(), "\n", "") << "\n";
+
 	assert(expr_block.identifier == "expr_block");
 
 	[[maybe_unused]]
@@ -928,39 +1137,41 @@ ivalue_t evaluate_expr_block(const mylang::$$Parsed &expr_block, State &state, b
 		scope_layer = state.function_scopes.back().blocks.size();
 	}
 
+	ExitScope _onexit([&]() {
+		if (new_scope)
+		{
+			assert(state.function_scopes.size() > 0);
+			assert(state.function_scopes.back().blocks.size() == scope_layer);
+			state.function_scopes.back().blocks.pop_back();
+		}
+	});
+
 	for (size_t i = 1; i < expr_block.group.size() - 1; ++i)
 	{
 		if (expr_block.group[i].identifier == "expr_block_$g1")
 		{
-			const auto& expr_block_g1 = expr_block.group[i];
-			const auto& statement = expr_block_g1.group[0];
-			evaluate_statement(statement, state);
+			const auto &expr_block_g1 = expr_block.group[i];
+			const auto &statement = expr_block_g1.group[0];
+			flow_checked(checked, evaluate_statement(statement, state));
+			(void)checked;
 		}
 	}
 
-	// TODO
-	ivalue_t result = state.last_return;
-	state.last_return = {};
-
 	if (const auto* expr_block_$g2 = expr_block.find("expr_block_$g2"))
 	{
-		const auto& expr = expr_block_$g2->group[0];
-		result = evaluate_expr(expr, state);
+		const auto &expr = expr_block_$g2->group[0];
+		return evaluate_expr(expr, state);
 	}
 
-	if (new_scope)
-	{
-		assert(state.function_scopes.size() > 0);
-		assert(state.function_scopes.back().blocks.size() == scope_layer);
-		state.function_scopes.back().blocks.pop_back();
-	}
-
-	return result;
+	return flow_unchanged({});
 }
 
 [[nodiscard]]
 ivalue_t &evaluate_token_path(const mylang::$$Parsed &token_path, State &state, bool assign)
 {
+	if (state.debug)
+		std::cout << "[debug] " << "evaluate_token_path: token_path = " << replace_str(token_path.flatten(), "\n", "") <<  "\n";
+
 	assert(token_path.identifier == "token_path");
 
 	const auto &token = token_path.group[0];
@@ -1000,10 +1211,41 @@ ivalue_t &evaluate_token_path(const mylang::$$Parsed &token_path, State &state, 
 	return *val;
 }
 
-void evaluate_statement(const mylang::$$Parsed &statement, State &state)
+[[nodiscard]]
+fivalue_t evaluate_statement(const mylang::$$Parsed &statement, State &state)
 {
+	if (state.debug)
+		std::cout << "[debug] " << "evaluate_statement: statement = " << replace_str(statement.flatten(), "\n", "") <<  "\n";
+
 	assert(statement.identifier == "statement");
 
+	if (statement.group[0].identifier == "statement_if")
+	{
+		const auto &statement_if = statement.group[0];
+		const auto &expr_if = statement_if.group[0];
+		flow_checked(checked, evaluate_expr(expr_if, state));
+		(void)checked;
+		return flow_unchanged({});
+	}
+	else
+	if (statement.group[0].identifier == "statement_while")
+	{
+		const auto &statement_while = statement.group[0];
+		const auto &expr_while = statement_while.group[0];
+		flow_checked(checked, evaluate_expr(expr_while, state));
+		(void)checked;
+		return flow_unchanged({});
+	}
+	else
+	if (statement.group[0].identifier == "statement_block")
+	{
+		const auto &statement_block = statement.group[0];
+		const auto &expr_block = statement_block.group[0];
+		flow_checked(checked, evaluate_expr_block(expr_block, state, true));
+		(void)checked;
+		return flow_unchanged({});
+	}
+	else
 	if (statement.group[0].identifier == "statement_let")
 	{
 		const auto &statement_assign = statement.group[0];
@@ -1017,7 +1259,9 @@ void evaluate_statement(const mylang::$$Parsed &statement, State &state)
 		if (auto insert_result = state.function_scopes.back().blocks.back()->variables.insert({ token.flatten(), {} }); insert_result.second)
 		{
 			ivalue_t &res = insert_result.first->second;
-			res = evaluate_expr(expr, state);
+
+			flow_checked(checked, evaluate_expr(expr, state));
+			res = state.refval_copy(checked);
 
 			if (statement_assign_$g1.group.size() == 0 && res)
 				res->const_value = true;
@@ -1026,67 +1270,63 @@ void evaluate_statement(const mylang::$$Parsed &statement, State &state)
 		{
 			throw 1;
 		}
+
+		return flow_unchanged({});
 	}
 	else
 	if (statement.group[0].identifier == "statement_return")
 	{
 		const auto &statement_return = statement.group[0];
-		const auto &expr = statement_return.group[2];
 
-		state.last_return = evaluate_expr(expr, state);
+		if (auto statement_return_$g0 = statement_return.find("statement_return_$g0"))
+		{
+			const auto &expr = statement_return_$g0->group[1];
+			flow_checked(checked, evaluate_expr(expr, state));
+			return fivalue_t{ checked, EFlowChange::Return };
+		}
+		else
+		{
+			return fivalue_t{ {}, EFlowChange::Return };
+		}
+	}
+	else
+	if (statement.group[0].identifier == "statement_continue")
+	{
+		const auto &statement_continue = statement.group[0];
+		(void)statement_continue;
+
+		if (!state.allow_continue)
+			throw 1;
+
+		return fivalue_t{ {}, EFlowChange::Continue };
+	}
+	else
+	if (statement.group[0].identifier == "statement_break")
+	{
+		const auto &statement_break = statement.group[0];
+
+		if (!state.allow_break)
+			throw 1;
+
+		if (auto statement_break_$g0 = statement_break.find("statement_break_$g0"))
+		{
+			const auto &expr = statement_break_$g0->group[1];
+			flow_checked(checked, evaluate_expr(expr, state));
+			return fivalue_t{ checked, EFlowChange::Break };
+		}
+		else
+		{
+			return fivalue_t{ {}, EFlowChange::Break };
+		}
 	}
 	else
 	if (statement.group[0].identifier == "statement_expr")
 	{
 		const auto &statement_expr = statement.group[0];
 		const auto &expr = statement_expr.group[0];
-		auto result = evaluate_expr(expr, state);
-		(void)result;
-	}
-	else
-	if (statement.group[0].identifier == "statement_if")
-	{
-		const auto &statement_if = statement.group[0];
-		const auto &expr_if = statement_if.group[0];
-		auto result = evaluate_expr(expr_if, state);
-		(void)result;
-	}
-	else
-	if (statement.group[0].identifier == "statement_while")
-	{
-		const auto &statement_while = statement.group[0];
-		const auto &expr = statement_while.group[4];
-		const auto &expr_block = statement_while.group[8];
-
-		auto res = evaluate_expr(expr, state);
-
-		if (!res || res->type != EValueType::Bool)
-			throw 1;
-
-		auto bool_res = std::static_pointer_cast<BoolValue>(res)->val;
-
-		while (bool_res)
-		{
-			auto result = evaluate_expr_block(expr_block, state, true);
-			(void)result;
-
-			{
-				res = evaluate_expr(expr, state);
-
-				if (!res || res->type != EValueType::Bool)
-					throw 1;
-
-				bool_res = std::static_pointer_cast<BoolValue>(res)->val;
-			}
-		}
-	}
-	else
-	if (statement.group[0].identifier == "statement_block")
-	{
-		const auto &statement_block = statement.group[0];
-		const auto &expr_block = statement_block.group[0];
-		auto result = evaluate_expr_block(expr_block, state, true);
-		(void)result;
+		flow_checked(checked, evaluate_expr(expr, state));
+		(void)checked;
+		return flow_unchanged({});
 	}
 	else
 	{
@@ -1099,6 +1339,7 @@ void evaluate_root(const mylang::$$Parsed &root)
 	assert(root.identifier == "root");
 
 	State state;
+	// state.debug = true;
 
 	{
 		auto &func = state.function_scopes.emplace_back();
@@ -1106,7 +1347,7 @@ void evaluate_root(const mylang::$$Parsed &root)
 		func.blocks.emplace_back(std::make_unique<State::StateBlock>());
 	}
 
-	state.create_static_lambda({"std","print"}, [](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> ivalue_t {
+	state.create_static_lambda({"std","print"}, [](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> fivalue_t {
 		for (size_t i = 0; i < args.size(); ++i)
 		{
 			if (i != 0)
@@ -1114,6 +1355,8 @@ void evaluate_root(const mylang::$$Parsed &root)
 
 			static_assert(_EValueTypeVersion == 5, "EValueType: check std.print");
 
+			if (!args[i])
+				std::cout << "null";
 			if (args[i]->type == EValueType::Bool)
 				std::cout << (std::static_pointer_cast<BoolValue>(args[i])->val ? "true" : "false");
 			else
@@ -1128,18 +1371,23 @@ void evaluate_root(const mylang::$$Parsed &root)
 
 		std::cout << "\n";
 
-		return {};
+		return flow_unchanged({});
 	});
 
-	state.create_static_lambda({"std","bool"}, [](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> ivalue_t {
+	state.create_static_lambda({"std","bool"}, [](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> fivalue_t {
 		if (args.size() != 1)
 			throw 1;
 
 		static_assert(_EValueTypeVersion == 5, "EValueType: check std.bool");
-
+		
+		if (!args[0])
+		{
+			throw 1;
+		}
+		else
 		if (args[0]->type == EValueType::Bool)
 		{
-			return state.create_bool(std::static_pointer_cast<BoolValue>(args[0])->val);
+			return flow_unchanged(state.create_bool(std::static_pointer_cast<BoolValue>(args[0])->val));
 		}
 		else
 		if (args[0]->type == EValueType::Str)
@@ -1150,7 +1398,7 @@ void evaluate_root(const mylang::$$Parsed &root)
 		else
 		if (args[0]->type == EValueType::I64)
 		{
-			return state.create_bool(std::static_pointer_cast<I64Value>(args[0])->val != 0);
+			return flow_unchanged(state.create_bool(std::static_pointer_cast<I64Value>(args[0])->val != 0));
 		}
 		else
 		{
@@ -1158,25 +1406,30 @@ void evaluate_root(const mylang::$$Parsed &root)
 		}
 	});
 
-	state.create_static_lambda({"std","str"}, [](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> ivalue_t {
+	state.create_static_lambda({"std","str"}, [](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> fivalue_t {
 		if (args.size() != 1)
 			throw 1;
 
 		static_assert(_EValueTypeVersion == 5, "EValueType: check std.str");
-
+		
+		if (!args[0])
+		{
+			throw 1;
+		}
+		else
 		if (args[0]->type == EValueType::Bool)
 		{
-			return state.create_str(std::static_pointer_cast<BoolValue>(args[0]) ? "true" : "false");
+			return flow_unchanged(state.create_str(std::static_pointer_cast<BoolValue>(args[0]) ? "true" : "false"));
 		}
 		else
 		if (args[0]->type == EValueType::Str)
 		{
-			return state.create_str(std::static_pointer_cast<StrValue>(args[0])->val.c_str());
+			return flow_unchanged(state.create_str(std::static_pointer_cast<StrValue>(args[0])->val.c_str()));
 		}
 		else
 		if (args[0]->type == EValueType::I64)
 		{
-			return state.create_str(std::to_string(std::static_pointer_cast<I64Value>(args[0])->val));
+			return flow_unchanged(state.create_str(std::to_string(std::static_pointer_cast<I64Value>(args[0])->val)));
 		}
 		else
 		{
@@ -1184,25 +1437,30 @@ void evaluate_root(const mylang::$$Parsed &root)
 		}
 	});
 
-	state.create_static_lambda({"std","i64"}, [](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> ivalue_t {
+	state.create_static_lambda({"std","i64"}, [](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> fivalue_t {
 		if (args.size() != 1)
 			throw 1;
 
 		static_assert(_EValueTypeVersion == 5, "EValueType: check std.i64");
 
+		if (!args[0])
+		{
+			throw 1;
+		}
+		else
 		if (args[0]->type == EValueType::Bool)
 		{
-			return state.create_i64(std::static_pointer_cast<BoolValue>(args[0]) ? 1 : 0);
+			return flow_unchanged(state.create_i64(std::static_pointer_cast<BoolValue>(args[0]) ? 1 : 0));
 		}
 		else
 		if (args[0]->type == EValueType::Str)
 		{
-			return state.create_i64(atoll(std::static_pointer_cast<StrValue>(args[0])->val.c_str()));
+			return flow_unchanged(state.create_i64(atoll(std::static_pointer_cast<StrValue>(args[0])->val.c_str())));
 		}
 		else
 		if (args[0]->type == EValueType::I64)
 		{
-			return state.create_i64(std::static_pointer_cast<I64Value>(args[0])->val);
+			return flow_unchanged(state.create_i64(std::static_pointer_cast<I64Value>(args[0])->val));
 		}
 		else
 		{
@@ -1210,8 +1468,19 @@ void evaluate_root(const mylang::$$Parsed &root)
 		}
 	});
 
-	state.create_static_lambda({"std","dict"}, [](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> ivalue_t {
-		return state.create_dict();
+	state.create_static_lambda({"std","dict"}, [](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> fivalue_t {
+		return flow_unchanged(state.create_dict());
+	});
+
+	state.create_static_lambda({"std","null"}, [](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> fivalue_t {
+		return flow_unchanged({});
+	});
+
+	state.create_static_lambda({"std","is_null"}, [](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> fivalue_t {
+		if (args.size() != 1)
+			throw 1;
+
+		return flow_unchanged(state.create_bool((bool)args[0]));
 	});
 
 	for (size_t i = 0; i < root.group.size(); ++i)
@@ -1220,7 +1489,11 @@ void evaluate_root(const mylang::$$Parsed &root)
 		{
 			const auto &root_$g1 = root.group[i];
 			const auto &statement = root_$g1.group[0];
-			evaluate_statement(statement, state);
+
+			auto checked = evaluate_statement(statement, state);
+
+			if (checked.second != EFlowChange::None)
+				throw 1;
 		}
 	}
 
@@ -1231,13 +1504,6 @@ void evaluate_root(const mylang::$$Parsed &root)
 
 } // namespace vm
 
-std::string read_file(const char *filename)
-{
-	std::ifstream f(filename);
-	std::stringstream buffer;
-	buffer << f.rdbuf();
-	return buffer.str();
-}
 
 void mylang_main(int argc, const char **argv)
 {

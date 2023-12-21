@@ -1,14 +1,37 @@
 
-let mut counter = 0;
+let flow_test = |a, b| {
 
-while (counter < 10) {
-	std.print(counter);
-
-	counter = {
-		let result = counter + 1;
-		result
+	if (a + b < 3) {
+		return 43;
 	}
-}
+
+	let mut counter = 0;
+
+	let w = while (counter < 10) {
+		std.print(counter);
+
+		counter = {
+			let result = counter + 1;
+			result
+		};
+
+		if (a < 10) {
+			continue;
+		}
+
+		if (a == 12) {
+			return 12;
+		}
+
+		a = a + 1;
+
+		break 123;
+	} else { 76 };
+
+	return w;
+};
+
+std.print(flow_test(1, 2));
 
 std.print(
 	false,

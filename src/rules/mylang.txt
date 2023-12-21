@@ -15,7 +15,6 @@ ws: "\n" | "\r" | " " | "\t"
 
 str: "\"" (("\\\"" | "\""^)*) "\""
 
-
 kv_return: "return"
 
 kv_continue: "continue"
@@ -64,7 +63,7 @@ expr_call: (token_path | expr_group | expr_function) (ws*) "(" (ws*) (expr (ws*)
 
 expr_group: "(" (ws*) expr (ws*) ")"
 
-expr_primitive: expr_if | expr_call | expr_function | kv_boolean | str | number | expr_assign | token_path | expr_group | expr_block
+expr_primitive: expr_if | expr_while | expr_call | expr_function | kv_boolean | str | number | expr_assign | token_path | expr_group | expr_block
 
 expr_mul: expr_primitive ((ws*) ("*" | "/") (ws*) expr_primitive)*
 
@@ -74,6 +73,8 @@ expr_bool_compare: expr_add ((ws*) ("<=" | ">=" | "<" | ">" | "==" | "!=") (ws*)
 
 expr_if: kv_if (ws*) "(" (ws*) expr (ws*) ")" (ws*) expr_block ((ws*) kv_else (ws*) expr_block)?
 
+expr_while: kv_while (ws*) "(" (ws*) expr (ws*) ")" (ws*) expr_block ((ws*) kv_else (ws*) expr_block)?
+
 expr_assign: token_path (ws*) "=" (ws*) expr
 
 expr: expr_bool_compare
@@ -81,21 +82,21 @@ expr: expr_bool_compare
 
 statement_let: kv_let (ws+) ((kv_mut ws+)?) token (ws*) "=" (ws*) expr (ws*) ";"
 
-statement_return: kv_return (ws+) expr (ws*) ";"
+statement_return: kv_return ((ws+) expr)? (ws*) ";"
 
-statement_continue: kv_continue (ws+) ";"
+statement_continue: kv_continue (ws*) ";"
 
-statement_break: kv_break (ws+) ";"
+statement_break: kv_break ((ws+) expr)? (ws*) ";"
 
 statement_expr: expr (ws*) ";"
 
 statement_if: expr_if
 
+statement_while: expr_while
+
 statement_block: expr_block
 
-statement_while: kv_while (ws*) "(" (ws*) expr (ws*) ")" (ws*) expr_block
-
-statement: statement_let | statement_return | statement_expr | statement_if | statement_while | statement_block
+statement: statement_if | statement_while | statement_block | statement_let | statement_return | statement_continue | statement_break | statement_expr
 
 
 root: (ws*) (statement (ws*))*
