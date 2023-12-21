@@ -7,7 +7,7 @@ let flow_test = |a, b| {
 
 	let mut counter = 0;
 
-	let w = while (counter < 10) {
+	let w = while ({ let result2 = counter + 1; result2 } < 10) {
 		std.print(counter);
 
 		counter = {

@@ -189,11 +189,9 @@ struct State
 		return l;
 	}
 
-	vlambda_t create_static_lambda(std::initializer_list<std::string> path, lambda_ptr_t lambda)
+	ivalue_t &create_empty_static(std::initializer_list<std::string> path)
 	{
 		assert(path.size() > 0);
-
-		auto l = create_lambda(lambda);
 
 		auto it = path.begin();
 
@@ -207,9 +205,7 @@ struct State
 			v = &std::static_pointer_cast<DictValue>(*v)->fields[*it++];
 		}
 
-		*v = std::static_pointer_cast<IValue>(l);
-
-		return l;
+		return *v;
 	}
 
 	vdict_t create_dict()
@@ -979,7 +975,7 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 			if (const auto *expr_if_$g4 = expr_if.find("expr_if_$g4"))
 			{
 				const auto &expr_block = expr_if_$g4->group[3];
-				return evaluate_expr_block(expr_block, state, true);
+				return evaluate_expr(expr_block, state);
 			}
 			else
 			{
@@ -1028,7 +1024,7 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 		{
 			static_assert(_EFlowChangeVersion == 4, "EFlowChange: check while block");
 
-			auto checked = evaluate_expr_block(expr_block, state, true);
+			auto checked = evaluate_expr(expr_block, state);
 
 			if (checked.second == EFlowChange::None)
 			{
@@ -1188,6 +1184,9 @@ ivalue_t &evaluate_token_path(const mylang::$$Parsed &token_path, State &state, 
 		if (!val)
 			throw 1;
 
+		if (!(*val))
+			throw 1;
+
 		if ((*val)->type != EValueType::Dict)
 			throw 1;
 
@@ -1200,7 +1199,7 @@ ivalue_t &evaluate_token_path(const mylang::$$Parsed &token_path, State &state, 
 			val = &it->second;
 	}
 
-	if (!val)
+	if (!val || !*val)
 	{
 		if (!assign || token_path.group.size() == 1)
 			throw 1;
@@ -1241,7 +1240,7 @@ fivalue_t evaluate_statement(const mylang::$$Parsed &statement, State &state)
 	{
 		const auto &statement_block = statement.group[0];
 		const auto &expr_block = statement_block.group[0];
-		flow_checked(checked, evaluate_expr_block(expr_block, state, true));
+		flow_checked(checked, evaluate_expr(expr_block, state));
 		(void)checked;
 		return flow_unchanged({});
 	}
@@ -1347,7 +1346,7 @@ void evaluate_root(const mylang::$$Parsed &root)
 		func.blocks.emplace_back(std::make_unique<State::StateBlock>());
 	}
 
-	state.create_static_lambda({"std","print"}, [](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> fivalue_t {
+	state.create_empty_static({"std","print"}) = state.create_lambda([](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> fivalue_t {
 		for (size_t i = 0; i < args.size(); ++i)
 		{
 			if (i != 0)
@@ -1374,7 +1373,7 @@ void evaluate_root(const mylang::$$Parsed &root)
 		return flow_unchanged({});
 	});
 
-	state.create_static_lambda({"std","bool"}, [](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> fivalue_t {
+	state.create_empty_static({"std","bool"}) = state.create_lambda([](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> fivalue_t {
 		if (args.size() != 1)
 			throw 1;
 
@@ -1406,7 +1405,7 @@ void evaluate_root(const mylang::$$Parsed &root)
 		}
 	});
 
-	state.create_static_lambda({"std","str"}, [](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> fivalue_t {
+	state.create_empty_static({"std","str"}) = state.create_lambda([](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> fivalue_t {
 		if (args.size() != 1)
 			throw 1;
 
@@ -1437,7 +1436,7 @@ void evaluate_root(const mylang::$$Parsed &root)
 		}
 	});
 
-	state.create_static_lambda({"std","i64"}, [](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> fivalue_t {
+	state.create_empty_static({"std","i64"}) = state.create_lambda([](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> fivalue_t {
 		if (args.size() != 1)
 			throw 1;
 
@@ -1468,15 +1467,15 @@ void evaluate_root(const mylang::$$Parsed &root)
 		}
 	});
 
-	state.create_static_lambda({"std","dict"}, [](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> fivalue_t {
+	state.create_empty_static({"std","dict"}) = state.create_lambda([](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> fivalue_t {
 		return flow_unchanged(state.create_dict());
 	});
 
-	state.create_static_lambda({"std","null"}, [](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> fivalue_t {
+	state.create_empty_static({"std","null"}) = state.create_lambda([](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> fivalue_t {
 		return flow_unchanged({});
 	});
 
-	state.create_static_lambda({"std","is_null"}, [](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> fivalue_t {
+	state.create_empty_static({"std","is_null"}) = state.create_lambda([](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> fivalue_t {
 		if (args.size() != 1)
 			throw 1;
 
