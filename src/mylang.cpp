@@ -22,6 +22,9 @@ using ivalue_t = std::shared_ptr<IValue>;
 using lambda_ptr_t = ivalue_t(*)(const LambdaValue *lambda, const std::vector<ivalue_t> &args, State &state);
 using variables_t = std::unordered_map<std::string, std::shared_ptr<IValue>>;
 
+[[maybe_unused]]
+const int _EValueTypeVersion = 5;
+
 enum class EValueType : uint8_t
 {
 	Bool,
@@ -73,11 +76,15 @@ struct LambdaValue : IValueTyped<EValueType::Lambda>
 	variables_t captures;
 };
 
+static_assert(_EValueTypeVersion == 5, "EValueType: check struct");
+
 using vbool_t = std::shared_ptr<BoolValue>;
 using vi64_t = std::shared_ptr<I64Value>;
 using vstr_t = std::shared_ptr<StrValue>;
 using vdict_t = std::shared_ptr<DictValue>;
 using vlambda_t = std::shared_ptr<LambdaValue>;
+
+static_assert(_EValueTypeVersion == 5, "EValueType: check shortcut");
 
 struct State
 {
@@ -152,40 +159,88 @@ struct State
 		return d;
 	}
 
-	ivalue_t shallow_copy(ivalue_t v)
+	static_assert(_EValueTypeVersion == 5, "EValueType: check create_");
+
+	ivalue_t refval_copy(ivalue_t v)
 	{
+		static_assert(_EValueTypeVersion == 5, "EValueType: check refval_copy");
+
+		if (!v)
+		{
+			return v;
+		}
+		else
 		if (v->type == EValueType::Bool)
 		{
 			auto result = create_bool(false);
-			*result = *std::static_pointer_cast<BoolValue>(v);
+			result->val = std::static_pointer_cast<BoolValue>(v)->val;
 			return result;
 		}
 		else
 		if (v->type == EValueType::Str)
 		{
 			auto result = create_str("");
-			*result = *std::static_pointer_cast<StrValue>(v);
+			result->val = std::static_pointer_cast<StrValue>(v)->val;
 			return result;
 		}
 		else
 		if (v->type == EValueType::I64)
 		{
 			auto result = create_i64(0);
-			*result = *std::static_pointer_cast<I64Value>(v);
+			result->val = std::static_pointer_cast<I64Value>(v)->val;
+			return result;
+		}
+		else
+		if (v->type == EValueType::Dict || v->type == EValueType::Lambda)
+		{
+			return v;
+		}
+	}
+
+	ivalue_t shallow_copy(ivalue_t v)
+	{
+		static_assert(_EValueTypeVersion == 5, "EValueType: check shallow_copy");
+
+		if (!v)
+		{
+			return v;
+		}
+		else
+		if (v->type == EValueType::Bool)
+		{
+			auto result = create_bool(false);
+			result->val = std::static_pointer_cast<BoolValue>(v)->val;
+			return result;
+		}
+		else
+		if (v->type == EValueType::Str)
+		{
+			auto result = create_str("");
+			result->val = std::static_pointer_cast<StrValue>(v)->val;
+			return result;
+		}
+		else
+		if (v->type == EValueType::I64)
+		{
+			auto result = create_i64(0);
+			result->val = std::static_pointer_cast<I64Value>(v)->val;
 			return result;
 		}
 		else
 		if (v->type == EValueType::Dict)
 		{
 			auto result = create_dict();
-			*result = *std::static_pointer_cast<DictValue>(v);
+			result->fields = std::static_pointer_cast<DictValue>(v)->fields;
 			return result;
 		}
 		else
 		if (v->type == EValueType::Lambda)
 		{
 			auto result = create_lambda(nullptr);
-			*result = *std::static_pointer_cast<LambdaValue>(v);
+			result->lambda_ptr = std::static_pointer_cast<LambdaValue>(v)->lambda_ptr;
+			result->expr_block = std::static_pointer_cast<LambdaValue>(v)->expr_block;
+			result->args = std::static_pointer_cast<LambdaValue>(v)->args;
+			result->captures = std::static_pointer_cast<LambdaValue>(v)->captures;
 			return result;
 		}
 		else
@@ -313,6 +368,8 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 			std::string comparator_str = expr_bool_compare_$g0_$g1.flatten();
 
 			const auto &get_numbers = [&]() -> std::pair<int64_t, int64_t> {
+				static_assert(_EValueTypeVersion == 5, "EValueType: check compare - get_numbers");
+
 				if (!left)
 					throw 1;
 
@@ -363,6 +420,8 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 				if (left->type != right->type)
 					return state.create_bool(false);
 
+				static_assert(_EValueTypeVersion == 5, "EValueType: check compare - eq");
+
 				if (left->type == EValueType::Bool)
 				{
 					auto ileft = std::static_pointer_cast<BoolValue>(left)->val;
@@ -404,6 +463,8 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 
 				if (left->type != right->type)
 					return state.create_bool(true);
+
+				static_assert(_EValueTypeVersion == 5, "EValueType: check compare - neq");
 
 				if (left->type == EValueType::Bool)
 				{
@@ -456,6 +517,8 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 
 		if (expr_add.group.size() > 1)
 		{
+			static_assert(_EValueTypeVersion == 5, "EValueType: check expr_add left");
+
 			if (!result)
 				throw 1;
 
@@ -476,6 +539,8 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 
 				if (result->type != val->type)
 					throw 1;
+
+				static_assert(_EValueTypeVersion == 5, "EValueType: check expr_add right");
 
 				if (result->type == EValueType::I64)
 				{
@@ -520,6 +585,8 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 
 		if (expr_mul.group.size() > 1)
 		{
+			static_assert(_EValueTypeVersion == 5, "EValueType: check expr_mul left");
+
 			if (!result)
 				throw 1;
 
@@ -541,6 +608,8 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 
 				if (val->type != EValueType::I64)
 					throw 1;
+
+				static_assert(_EValueTypeVersion == 5, "EValueType: check expr_mul right");
 
 				if (sign.literal == "*")
 				{
@@ -613,6 +682,12 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 		{
 			const auto &expr_group = expr_primitive.group[0];
 			return evaluate_expr(expr_group, state);
+		}
+		else
+		if (expr_primitive.group[0].identifier == "expr_block")
+		{
+			const auto &expr_block = expr_primitive.group[0];
+			return evaluate_expr(expr_block, state);
 		}
 		else
 		{
@@ -832,7 +907,7 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 		if (res && res->const_value)
 			throw 1;
 
-		return res = evaluate_expr(expr, state);
+		return res = state.refval_copy(evaluate_expr(expr, state));
 	}
 
 	throw 1;
@@ -841,6 +916,8 @@ ivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 [[nodiscard]]
 ivalue_t evaluate_expr_block(const mylang::$$Parsed &expr_block, State &state, bool new_scope)
 {
+	assert(expr_block.identifier == "expr_block");
+
 	[[maybe_unused]]
 	size_t scope_layer = 0;
 
@@ -884,6 +961,8 @@ ivalue_t evaluate_expr_block(const mylang::$$Parsed &expr_block, State &state, b
 [[nodiscard]]
 ivalue_t &evaluate_token_path(const mylang::$$Parsed &token_path, State &state, bool assign)
 {
+	assert(token_path.identifier == "token_path");
+
 	const auto &token = token_path.group[0];
 
 	std::string tok = token.flatten();
@@ -923,6 +1002,8 @@ ivalue_t &evaluate_token_path(const mylang::$$Parsed &token_path, State &state, 
 
 void evaluate_statement(const mylang::$$Parsed &statement, State &state)
 {
+	assert(statement.identifier == "statement");
+
 	if (statement.group[0].identifier == "statement_let")
 	{
 		const auto &statement_assign = statement.group[0];
@@ -986,7 +1067,8 @@ void evaluate_statement(const mylang::$$Parsed &statement, State &state)
 
 		while (bool_res)
 		{
-			evaluate_expr_block(expr_block, state, true);
+			auto result = evaluate_expr_block(expr_block, state, true);
+			(void)result;
 
 			{
 				res = evaluate_expr(expr, state);
@@ -999,6 +1081,14 @@ void evaluate_statement(const mylang::$$Parsed &statement, State &state)
 		}
 	}
 	else
+	if (statement.group[0].identifier == "statement_block")
+	{
+		const auto &statement_block = statement.group[0];
+		const auto &expr_block = statement_block.group[0];
+		auto result = evaluate_expr_block(expr_block, state, true);
+		(void)result;
+	}
+	else
 	{
 		throw 1;
 	}
@@ -1006,6 +1096,8 @@ void evaluate_statement(const mylang::$$Parsed &statement, State &state)
 
 void evaluate_root(const mylang::$$Parsed &root)
 {
+	assert(root.identifier == "root");
+
 	State state;
 
 	{
@@ -1019,6 +1111,8 @@ void evaluate_root(const mylang::$$Parsed &root)
 		{
 			if (i != 0)
 				std::cout << " ";
+
+			static_assert(_EValueTypeVersion == 5, "EValueType: check std.print");
 
 			if (args[i]->type == EValueType::Bool)
 				std::cout << (std::static_pointer_cast<BoolValue>(args[i])->val ? "true" : "false");
@@ -1040,6 +1134,8 @@ void evaluate_root(const mylang::$$Parsed &root)
 	state.create_static_lambda({"std","bool"}, [](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> ivalue_t {
 		if (args.size() != 1)
 			throw 1;
+
+		static_assert(_EValueTypeVersion == 5, "EValueType: check std.bool");
 
 		if (args[0]->type == EValueType::Bool)
 		{
@@ -1066,6 +1162,8 @@ void evaluate_root(const mylang::$$Parsed &root)
 		if (args.size() != 1)
 			throw 1;
 
+		static_assert(_EValueTypeVersion == 5, "EValueType: check std.str");
+
 		if (args[0]->type == EValueType::Bool)
 		{
 			return state.create_str(std::static_pointer_cast<BoolValue>(args[0]) ? "true" : "false");
@@ -1089,6 +1187,8 @@ void evaluate_root(const mylang::$$Parsed &root)
 	state.create_static_lambda({"std","i64"}, [](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> ivalue_t {
 		if (args.size() != 1)
 			throw 1;
+
+		static_assert(_EValueTypeVersion == 5, "EValueType: check std.i64");
 
 		if (args[0]->type == EValueType::Bool)
 		{
@@ -1158,6 +1258,8 @@ void mylang_main(int argc, const char **argv)
 		colors["str"] = "\033[91m";
 		colors["number"] = "\033[92m";
 		colors["kv_return"] = "\033[95m";
+		colors["kv_continue"] = "\033[95m";
+		colors["kv_break"] = "\033[95m";
 		colors["kv_let"] = "\033[94m";
 		colors["kv_mut"] = "\033[94m";
 		colors["kv_boolean"] = "\033[94m";
