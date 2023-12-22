@@ -14,3 +14,6 @@
 #include <unordered_set>
 #include <ranges>
 #include <functional>
+
+#include <new>
+#include <utility>

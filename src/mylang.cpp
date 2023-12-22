@@ -11,6 +11,9 @@
 #include <unordered_set>
 #include <ranges>
 
+#include "small_vector.hpp"
+#include "sptr.hpp"
+
 
 std::string replace_str(std::string str, const std::string& from, const std::string& to) {
 	if (from.empty())
@@ -34,96 +37,6 @@ std::string read_file(const char *filename)
 	return buffer.str();
 }
 
-template <typename T, size_t N>
-struct allocator_with_buffer
-{
-	using value_type = T;
-
-	template <class U>
-	struct rebind { typedef allocator_with_buffer<U, N> other; };
-
-	allocator_with_buffer() = default;
-
-	explicit allocator_with_buffer(T *buffer) : _buffer{ buffer } {}
-
-	template <class U>
-	allocator_with_buffer(const allocator_with_buffer<U, N> &other) : _buffer{ (T *)other._buffer } {}
-
-	T* _buffer;
-
-	constexpr void deallocate(T *const _Ptr, const size_t _Count) {
-#if _ITERATOR_DEBUG_LEVEL != 0
-		if constexpr (std::is_same_v<T, std::_Container_proxy>)
-		{
-			return;
-		}
-#endif // _ITERATOR_DEBUG_LEVEL == 0
-
-		if (_Ptr == _buffer)
-			return;
-
-		std::allocator<T>{}.deallocate(_Ptr, _Count);
-	}
-
-	[[nodiscard]] constexpr __declspec(allocator) T *allocate(const size_t _Count) {
-#if _ITERATOR_DEBUG_LEVEL != 0
-		if constexpr (std::is_same_v<T, std::_Container_proxy>)
-		{
-			return (T *)_buffer - 1; // _buffer_Container_proxy
-		}
-#endif // _ITERATOR_DEBUG_LEVEL == 0
-
-		if (_Count <= N)
-			return _buffer;
-
-		return std::allocator<T>{}.allocate(_Count);
-	}
-};
-
-template <typename T, size_t N>
-struct small_vector : std::vector<T, allocator_with_buffer<T, N>>
-{
-#if _ITERATOR_DEBUG_LEVEL != 0
-	alignas(std::_Container_proxy)
-	char _buffer_Container_proxy[sizeof(std::_Container_proxy)];
-#endif // _ITERATOR_DEBUG_LEVEL == 0
-
-	alignas(T)
-	char _buffer[N * sizeof(T)];
-
-	using _base = std::vector<T, allocator_with_buffer<T, N>>;
-
-	small_vector() : _base(allocator_with_buffer<T, N>((T *)_buffer))
-	{
-		_base::reserve(N);
-	}
-
-	small_vector(const small_vector &other) : small_vector()
-	{
-		std::copy(other.begin(), other.end(), std::back_inserter(*this));
-	}
-
-	small_vector &operator = (const small_vector &other)
-	{
-		_base::clear();
-		std::copy(other.begin(), other.end(), std::back_inserter(*this));
-		return *this;
-	}
-
-	small_vector(small_vector &&other) : small_vector()
-	{
-		std::move(other.begin(), other.end(), std::back_inserter(*this));
-	}
-
-	small_vector &operator = (small_vector &&other)
-	{
-		_base::clear();
-		std::move(other.begin(), other.end(), std::back_inserter(*this));
-		return *this;
-	}
-};
-
-
 
 namespace vm
 {
@@ -135,7 +48,7 @@ enum class EFlowChange;
 
 constexpr size_t args_vector_soo_size = 4;
 
-using ivalue_t = std::shared_ptr<IValue>;
+using ivalue_t = sptr<IValue>;
 using fivalue_t = std::pair<ivalue_t, EFlowChange>;
 using args_vector = small_vector<ivalue_t, args_vector_soo_size>;
 using lambda_ptr_t = fivalue_t(*)(const LambdaValue *lambda, const args_vector &args, State &state);
@@ -235,11 +148,11 @@ struct LambdaValue : IValueTyped<EValueType::Lambda>
 
 static_assert(_EValueTypeVersion == 5, "EValueType: check struct");
 
-using vbool_t = std::shared_ptr<BoolValue>;
-using vi64_t = std::shared_ptr<I64Value>;
-using vstr_t = std::shared_ptr<StrValue>;
-using vdict_t = std::shared_ptr<DictValue>;
-using vlambda_t = std::shared_ptr<LambdaValue>;
+using vbool_t = sptr<BoolValue>;
+using vi64_t = sptr<I64Value>;
+using vstr_t = sptr<StrValue>;
+using vdict_t = sptr<DictValue>;
+using vlambda_t = sptr<LambdaValue>;
 
 static_assert(_EValueTypeVersion == 5, "EValueType: check shortcut");
 
@@ -275,38 +188,93 @@ struct State
 		// TODO: unique_ptr
 	};
 
-	std::vector<StateFunction> function_scopes;
 	std::vector<std::vector<std::string>> structs{ std::vector<std::string>() };
+
+	std::unique_ptr<sptr_memory_pool<BoolValue>> memory_pool_bool = std::make_unique<sptr_memory_pool<BoolValue>>();
+	std::unique_ptr<sptr_memory_pool<I64Value>> memory_pool_i64 = std::make_unique<sptr_memory_pool<I64Value>>();
+	std::unique_ptr<sptr_memory_pool<StrValue>> memory_pool_str = std::make_unique<sptr_memory_pool<StrValue>>();
+	std::unique_ptr<sptr_memory_pool<DictValue>> memory_pool_dict = std::make_unique<sptr_memory_pool<DictValue>>();
+	std::unique_ptr<sptr_memory_pool<LambdaValue>> memory_pool_lambda = std::make_unique<sptr_memory_pool<LambdaValue>>();
+
+	std::vector<StateFunction> function_scopes;
 
 	int allow_continue = false;
 	int allow_break = false;
 
 	bool debug = false;
 
-	vbool_t create_bool(bool val)
+	template <typename T>
+	sptr<T> create_var()
 	{
-		auto i = std::make_shared<BoolValue>();
-		i->val = val;
-		return i;
+		auto v = sptr<T>::create_bounded();
+		return v;
 	}
 
-	vstr_t create_str(std::string val)
+	template <>
+	sptr<BoolValue> create_var()
 	{
-		auto s = std::make_shared<StrValue>();
-		s->val = val;
-		return s;
+		auto v = memory_pool_bool->create();
+		return v;
+	}
+
+	template <>
+	sptr<I64Value> create_var()
+	{
+		auto v = memory_pool_i64->create();
+		return v;
+	}
+
+	template <>
+	sptr<StrValue> create_var()
+	{
+		auto v = memory_pool_str->create();
+		return v;
+	}
+
+	template <>
+	sptr<DictValue> create_var()
+	{
+		auto v = memory_pool_dict->create();
+		return v;
+	}
+
+	template <>
+	sptr<LambdaValue> create_var()
+	{
+		auto v = memory_pool_lambda->create();
+		return v;
+	}
+
+	vbool_t create_bool(bool val)
+	{
+		auto i = create_var<BoolValue>();
+		i->val = val;
+		return i;
 	}
 
 	vi64_t create_i64(int64_t val)
 	{
-		auto i = std::make_shared<I64Value>();
+		auto i = create_var<I64Value>();
 		i->val = val;
 		return i;
 	}
 
+	vstr_t create_str(const std::string &val)
+	{
+		auto s = create_var<StrValue>();
+		s->val = val;
+		return s;
+	}
+
+	vdict_t create_dict()
+	{
+		auto d = create_var<DictValue>();
+		return d;
+	}
+
 	vlambda_t create_lambda(lambda_ptr_t lambda)
 	{
-		auto l = std::make_shared<LambdaValue>();
+		auto l = create_var<LambdaValue>();
 		l->lambda_ptr = lambda;
 		return l;
 	}
@@ -322,18 +290,12 @@ struct State
 		while (it != path.end())
 		{
 			if (!*v)
-				*v = std::static_pointer_cast<IValue>(create_dict());
+				*v = create_dict();
 
-			v = &std::static_pointer_cast<DictValue>(*v)->fields.get_or_declare_variable(*this, *it++);
+			v = &v->casted<DictValue>()->fields.get_or_declare_variable(*this, *it++);
 		}
 
 		return *v;
-	}
-
-	vdict_t create_dict()
-	{
-		auto d = std::make_shared<DictValue>();
-		return d;
 	}
 
 	static_assert(_EValueTypeVersion == 5, "EValueType: check create_");
@@ -350,21 +312,21 @@ struct State
 		if (v->type == EValueType::Bool)
 		{
 			auto result = create_bool(false);
-			result->val = std::static_pointer_cast<BoolValue>(v)->val;
+			result->val = v.casted<BoolValue>()->val;
 			return result;
 		}
 		else
 		if (v->type == EValueType::Str)
 		{
 			auto result = create_str("");
-			result->val = std::static_pointer_cast<StrValue>(v)->val;
+			result->val = v.casted<StrValue>()->val;
 			return result;
 		}
 		else
 		if (v->type == EValueType::I64)
 		{
 			auto result = create_i64(0);
-			result->val = std::static_pointer_cast<I64Value>(v)->val;
+			result->val = v.casted<I64Value>()->val;
 			return result;
 		}
 		else
@@ -390,38 +352,38 @@ struct State
 		if (v->type == EValueType::Bool)
 		{
 			auto result = create_bool(false);
-			result->val = std::static_pointer_cast<BoolValue>(v)->val;
+			result->val = v.casted<BoolValue>()->val;
 			return result;
 		}
 		else
 		if (v->type == EValueType::Str)
 		{
 			auto result = create_str("");
-			result->val = std::static_pointer_cast<StrValue>(v)->val;
+			result->val = v.casted<StrValue>()->val;
 			return result;
 		}
 		else
 		if (v->type == EValueType::I64)
 		{
 			auto result = create_i64(0);
-			result->val = std::static_pointer_cast<I64Value>(v)->val;
+			result->val = v.casted<I64Value>()->val;
 			return result;
 		}
 		else
 		if (v->type == EValueType::Dict)
 		{
 			auto result = create_dict();
-			result->fields = std::static_pointer_cast<DictValue>(v)->fields;
+			result->fields = v.casted<DictValue>()->fields;
 			return result;
 		}
 		else
 		if (v->type == EValueType::Lambda)
 		{
 			auto result = create_lambda(nullptr);
-			result->lambda_ptr = std::static_pointer_cast<LambdaValue>(v)->lambda_ptr;
-			result->expr_block = std::static_pointer_cast<LambdaValue>(v)->expr_block;
-			result->args = std::static_pointer_cast<LambdaValue>(v)->args;
-			result->captures = std::static_pointer_cast<LambdaValue>(v)->captures;
+			result->lambda_ptr = v.casted<LambdaValue>()->lambda_ptr;
+			result->expr_block = v.casted<LambdaValue>()->expr_block;
+			result->args = v.casted<LambdaValue>()->args;
+			result->captures = v.casted<LambdaValue>()->captures;
 			return result;
 		}
 		else
@@ -497,7 +459,7 @@ struct State
 
 		for (; it != path.end(); ++it, ++cit)
 		{
-			auto &vars = std::static_pointer_cast<DictValue>(v)->fields;
+			auto &vars = v.casted<DictValue>()->fields;
 
 			if (auto vr = vars.find_variable(*this, *it, (var_block_cache &)*cit))
 			{
@@ -524,7 +486,7 @@ struct State
 
 		for (; it != path.end(); ++it)
 		{
-			auto &vars = std::static_pointer_cast<DictValue>(v)->fields;
+			auto &vars = v.casted<DictValue>()->fields;
 
 			if (auto vr = vars.find_variable(*this, *it))
 			{
@@ -805,7 +767,7 @@ fivalue_t evaluate_call(ivalue_t func, const args_vector &args, State &state)
 	});
 
 	{
-		auto l = std::static_pointer_cast<LambdaValue>(func);
+		auto l = func.casted<LambdaValue>();
 		auto checked = l->lambda_ptr(l.get(), args, state);
 
 		static_assert(_EFlowChangeVersion == 4, "EFlowChange: check expr_call");
@@ -871,8 +833,8 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 				if (right->type != EValueType::I64)
 					throw 1;
 
-				auto ileft = std::static_pointer_cast<I64Value>(left)->val;
-				auto iright = std::static_pointer_cast<I64Value>(right)->val;
+				auto ileft = left.casted<I64Value>()->val;
+				auto iright = right.casted<I64Value>()->val;
 
 				return { ileft, iright };
 			};
@@ -913,24 +875,24 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 
 				if (left->type == EValueType::Bool)
 				{
-					auto ileft = std::static_pointer_cast<BoolValue>(left)->val;
-					auto iright = std::static_pointer_cast<BoolValue>(right)->val;
+					auto ileft = left.casted<BoolValue>()->val;
+					auto iright = right.casted<BoolValue>()->val;
 				
 					return flow_unchanged(state.create_bool(ileft == iright));
 				}
 				else
 				if (left->type == EValueType::Str)
 				{
-					auto ileft = std::static_pointer_cast<StrValue>(left)->val;
-					auto iright = std::static_pointer_cast<StrValue>(right)->val;
+					auto ileft = left.casted<StrValue>()->val;
+					auto iright = right.casted<StrValue>()->val;
 				
 					return flow_unchanged(state.create_bool(ileft == iright));
 				}
 				else
 				if (left->type == EValueType::I64)
 				{
-					auto ileft = std::static_pointer_cast<I64Value>(left)->val;
-					auto iright = std::static_pointer_cast<I64Value>(right)->val;
+					auto ileft = left.casted<I64Value>()->val;
+					auto iright = right.casted<I64Value>()->val;
 				
 					return flow_unchanged(state.create_bool(ileft == iright));
 				}
@@ -957,24 +919,24 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 
 				if (left->type == EValueType::Bool)
 				{
-					auto ileft = std::static_pointer_cast<BoolValue>(left)->val;
-					auto iright = std::static_pointer_cast<BoolValue>(right)->val;
+					auto ileft = left.casted<BoolValue>()->val;
+					auto iright = right.casted<BoolValue>()->val;
 				
 					return flow_unchanged(state.create_bool(ileft != iright));
 				}
 				else
 				if (left->type == EValueType::Str)
 				{
-					auto ileft = std::static_pointer_cast<StrValue>(left)->val;
-					auto iright = std::static_pointer_cast<StrValue>(right)->val;
+					auto ileft = left.casted<StrValue>()->val;
+					auto iright = right.casted<StrValue>()->val;
 				
 					return flow_unchanged(state.create_bool(ileft != iright));
 				}
 				else
 				if (left->type == EValueType::I64)
 				{
-					auto ileft = std::static_pointer_cast<I64Value>(left)->val;
-					auto iright = std::static_pointer_cast<I64Value>(right)->val;
+					auto ileft = left.casted<I64Value>()->val;
+					auto iright = right.casted<I64Value>()->val;
 				
 					return flow_unchanged(state.create_bool(ileft != iright));
 				}
@@ -1035,12 +997,12 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 				{
 					if (sign.literal == "+")
 					{
-						std::static_pointer_cast<I64Value>(left)->val += std::static_pointer_cast<I64Value>(right)->val;
+						left.casted<I64Value>()->val += right.casted<I64Value>()->val;
 					}
 					else
 					if (sign.literal == "-")
 					{
-						std::static_pointer_cast<I64Value>(left)->val -= std::static_pointer_cast<I64Value>(right)->val;
+						left.casted<I64Value>()->val -= right.casted<I64Value>()->val;
 					}
 				}
 				else
@@ -1048,7 +1010,7 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 				{
 					if (sign.literal == "+")
 					{
-						std::static_pointer_cast<StrValue>(left)->val += std::static_pointer_cast<StrValue>(right)->val;
+						left.casted<StrValue>()->val += right.casted<StrValue>()->val;
 					}
 					else
 					{
@@ -1102,17 +1064,17 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 
 				if (sign.literal == "*")
 				{
-					std::static_pointer_cast<I64Value>(left)->val *= std::static_pointer_cast<I64Value>(right)->val;
+					left.casted<I64Value>()->val *= right.casted<I64Value>()->val;
 				}
 				else
 				if (sign.literal == "/")
 				{
-					std::static_pointer_cast<I64Value>(left)->val /= std::static_pointer_cast<I64Value>(right)->val;
+					left.casted<I64Value>()->val /= right.casted<I64Value>()->val;
 				}
 				else
 				if (sign.literal == "%")
 				{
-					std::static_pointer_cast<I64Value>(left)->val %= std::static_pointer_cast<I64Value>(right)->val;
+					left.casted<I64Value>()->val %= right.casted<I64Value>()->val;
 				}
 			}
 		}
@@ -1217,13 +1179,39 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 	{
 		const auto &str = par;
 		const auto &str_$g0 = str.group[1];
-		return flow_unchanged(state.create_str(str_$g0.flatten()));
+
+		struct StrParsedCustomData : mylang::$$ParsedCustomData
+		{
+			std::string val;
+		};
+
+		[[unlikely]]
+		if (!str_$g0.custom_data)
+		{
+			str_$g0.custom_data = std::make_unique<StrParsedCustomData>();
+			static_cast<StrParsedCustomData *>(str_$g0.custom_data.get())->val = str_$g0.flatten();
+		}
+
+		return flow_unchanged(state.create_str(static_cast<StrParsedCustomData *>(str_$g0.custom_data.get())->val));
 	}
 	else
 	if (par.identifier == mylang::$$IdentifierType::$i_number)
 	{
 		const auto &number = par;
-		return flow_unchanged(state.create_i64(atoll(number.flatten().c_str())));
+
+		struct NumberParsedCustomData : mylang::$$ParsedCustomData
+		{
+			int64_t val = 0;
+		};
+
+		[[unlikely]]
+		if (!number.custom_data)
+		{
+			number.custom_data = std::make_unique<NumberParsedCustomData>();
+			static_cast<NumberParsedCustomData *>(number.custom_data.get())->val = atoll(number.flatten().c_str());
+		}
+
+		return flow_unchanged(state.create_i64(static_cast<NumberParsedCustomData *>(number.custom_data.get())->val));
 	}
 	else
 	if (par.identifier == mylang::$$IdentifierType::$i_token_path)
@@ -1378,7 +1366,7 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 		if (res->type != EValueType::Bool)
 			throw 1;
 
-		auto bool_res = std::static_pointer_cast<BoolValue>(res)->val;
+		auto bool_res = res.casted<BoolValue>()->val;
 
 		if (bool_res)
 		{
@@ -1423,7 +1411,7 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 			if (!res || res->type != EValueType::Bool)
 				throw 1;
 
-			bool_res = std::static_pointer_cast<BoolValue>(res)->val;
+			bool_res = res.casted<BoolValue>()->val;
 		}
 
 		++state.allow_continue;
@@ -1481,7 +1469,7 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 				if (!res || res->type != EValueType::Bool)
 					throw 1;
 
-				bool_res = std::static_pointer_cast<BoolValue>(res)->val;
+				bool_res = res.casted<BoolValue>()->val;
 			}
 		}
 
@@ -1577,8 +1565,6 @@ ivalue_t &evaluate_token_path(const mylang::$$Parsed &token_path, State &state, 
 
 	assert(token_path.identifier == mylang::$$IdentifierType::$i_token_path);
 
-#if 1
-
 	struct TokenPathParsedCustomData : mylang::$$ParsedCustomData
 	{
 		size_t function_index = 0;
@@ -1587,6 +1573,7 @@ ivalue_t &evaluate_token_path(const mylang::$$Parsed &token_path, State &state, 
 		std::vector<var_id_cache> var_ids;
 	};
 
+	[[likely]]
 	if (token_path.custom_data)
 	{
 		TokenPathParsedCustomData &custom_data = *static_cast<TokenPathParsedCustomData *>(token_path.custom_data.get());
@@ -1606,16 +1593,19 @@ ivalue_t &evaluate_token_path(const mylang::$$Parsed &token_path, State &state, 
 
 				if (i + 1 != custom_data.var_ids.size())
 				{
+					[[unlikely]]
 					if (!val)
 						throw 1;
-
+					
+					[[unlikely]]
 					if (!(*val))
 						throw 1;
-
+					
+					[[unlikely]]
 					if ((*val)->type != EValueType::Dict)
 						throw 1;
 
-					vars = &std::static_pointer_cast<DictValue>(*val)->fields;
+					vars = &val->casted<DictValue>()->fields;
 				}
 			}
 			else
@@ -1656,16 +1646,19 @@ ivalue_t &evaluate_token_path(const mylang::$$Parsed &token_path, State &state, 
 						const auto &token_path_$g0 = token_path.group[i];
 						const auto &token = token_path_$g0.group[3];
 
+						[[unlikely]]
 						if (!val)
 							throw 1;
 
+						[[unlikely]]
 						if (!(*val))
 							throw 1;
 
+						[[unlikely]]
 						if ((*val)->type != EValueType::Dict)
 							throw 1;
 
-						vars = &std::static_pointer_cast<DictValue>(*val)->fields;
+						vars = &val->casted<DictValue>()->fields;
 						tok = token.flatten();
 
 						if (auto index = vars->find_variable_index(state, tok); index == (size_t)-1)
@@ -1698,43 +1691,6 @@ ivalue_t &evaluate_token_path(const mylang::$$Parsed &token_path, State &state, 
 	}
 
 	throw 1;
-#else
-	auto [val, block] = state.find_variable_with_block(tok);
-	variables_t *vars = &block->variables;
-
-	for (size_t i = 1; i < token_path.group.size(); ++i)
-	{
-		const auto &token_path_$g0 = token_path.group[i];
-		const auto &token = token_path_$g0.group[3];
-
-		if (!val)
-			throw 1;
-
-		if (!(*val))
-			throw 1;
-
-		if ((*val)->type != EValueType::Dict)
-			throw 1;
-
-		vars = &std::static_pointer_cast<DictValue>(*val)->fields;
-		tok = token.flatten();
-
-		if (auto index = vars->find_variable_index(state, tok); index == (size_t)-1)
-			val = nullptr;
-		else
-			val = &vars->variables[index];
-	}
-
-	if (!val || !*val)
-	{
-		if (!assign || token_path.group.size() == 1)
-			throw 1;
-
-		val = &vars->get_or_declare_variable(state, tok);
-	}
-
-	return *val;
-#endif
 }
 
 [[nodiscard]]
@@ -1880,13 +1836,13 @@ State prepare_state()
 			if (!args[i])
 				std::cout << "null";
 			if (args[i]->type == EValueType::Bool)
-				std::cout << (std::static_pointer_cast<BoolValue>(args[i])->val ? "true" : "false");
+				std::cout << (args[i].casted<BoolValue>()->val ? "true" : "false");
 			else
 			if (args[i]->type == EValueType::Str)
-				std::cout << std::static_pointer_cast<StrValue>(args[i])->val;
+				std::cout << args[i].casted<StrValue>()->val;
 			else
 			if (args[i]->type == EValueType::I64)
-				std::cout << std::static_pointer_cast<I64Value>(args[i])->val;
+				std::cout << args[i].casted<I64Value>()->val;
 			else
 				std::cout << "IValue{" << (void *)args[i].get() << "}";
 		}
@@ -1909,18 +1865,18 @@ State prepare_state()
 		else
 		if (args[0]->type == EValueType::Bool)
 		{
-			return flow_unchanged(state.create_bool(std::static_pointer_cast<BoolValue>(args[0])->val));
+			return flow_unchanged(state.create_bool(args[0].casted<BoolValue>()->val));
 		}
 		else
 		if (args[0]->type == EValueType::Str)
 		{
-			// return state.create_bool(std::static_pointer_cast<StrValue>(args[0])->val.c_str());
+			// return state.create_bool(args[0].casted<StrValue>()->val.c_str());
 			throw 1;
 		}
 		else
 		if (args[0]->type == EValueType::I64)
 		{
-			return flow_unchanged(state.create_bool(std::static_pointer_cast<I64Value>(args[0])->val != 0));
+			return flow_unchanged(state.create_bool(args[0].casted<I64Value>()->val != 0));
 		}
 		else
 		{
@@ -1941,17 +1897,17 @@ State prepare_state()
 		else
 		if (args[0]->type == EValueType::Bool)
 		{
-			return flow_unchanged(state.create_str(std::static_pointer_cast<BoolValue>(args[0]) ? "true" : "false"));
+			return flow_unchanged(state.create_str(args[0].casted<BoolValue>() ? "true" : "false"));
 		}
 		else
 		if (args[0]->type == EValueType::Str)
 		{
-			return flow_unchanged(state.create_str(std::static_pointer_cast<StrValue>(args[0])->val.c_str()));
+			return flow_unchanged(state.create_str(args[0].casted<StrValue>()->val.c_str()));
 		}
 		else
 		if (args[0]->type == EValueType::I64)
 		{
-			return flow_unchanged(state.create_str(std::to_string(std::static_pointer_cast<I64Value>(args[0])->val)));
+			return flow_unchanged(state.create_str(std::to_string(args[0].casted<I64Value>()->val)));
 		}
 		else
 		{
@@ -1972,17 +1928,17 @@ State prepare_state()
 		else
 		if (args[0]->type == EValueType::Bool)
 		{
-			return flow_unchanged(state.create_i64(std::static_pointer_cast<BoolValue>(args[0]) ? 1 : 0));
+			return flow_unchanged(state.create_i64(args[0].casted<BoolValue>() ? 1 : 0));
 		}
 		else
 		if (args[0]->type == EValueType::Str)
 		{
-			return flow_unchanged(state.create_i64(atoll(std::static_pointer_cast<StrValue>(args[0])->val.c_str())));
+			return flow_unchanged(state.create_i64(atoll(args[0].casted<StrValue>()->val.c_str())));
 		}
 		else
 		if (args[0]->type == EValueType::I64)
 		{
-			return flow_unchanged(state.create_i64(std::static_pointer_cast<I64Value>(args[0])->val));
+			return flow_unchanged(state.create_i64(args[0].casted<I64Value>()->val));
 		}
 		else
 		{
@@ -2033,9 +1989,131 @@ void run(State &state, const mylang::$$Parsed &root)
 
 } // namespace vm
 
+#define OLC_PGE_APPLICATION
+#include "../libs/olcPixelGameEngine/olcPixelGameEngine.h"
+
+class Example : public olc::PixelGameEngine
+{
+public:
+	Example()
+	{
+		sAppName = "Example";
+	}
+
+	mylang::$$Parsed root;
+	vm::State state;
+
+public:
+	bool OnUserCreate() override
+	{
+		std::string text = read_file("../src/mylang/mylang_test.txt");
+
+		const char *s = text.data();
+		const char *e = s + text.size();
+
+		root = mylang::$parse_root(s, e).value();
+		vm::fix_tree(root);
+		vm::optimize_tree(root);
+		state = vm::prepare_state();
+
+		state.create_empty_static({ "Example", "this" }) = state.create_i64((int64_t)this);
+
+		state.create_empty_static({ "Example", "ScreenWidth" }) = state.create_lambda([](const vm::LambdaValue *, const vm::args_vector &args, vm::State &state) -> vm::fivalue_t {
+			static std::initializer_list<vm::var_block_cache> var_cache_this{ {}, {} };
+			Example *_this = (Example *)state.find_variable({ "Example", "this" }, var_cache_this).casted<vm::I64Value>()->val;
+
+			return flow_unchanged(state.create_i64(_this->ScreenWidth()));
+		});
+
+		state.create_empty_static({ "Example", "ScreenHeight" }) = state.create_lambda([](const vm::LambdaValue *, const vm::args_vector &args, vm::State &state) -> vm::fivalue_t {
+			static std::initializer_list<vm::var_block_cache> var_cache_this{ {}, {} };
+			Example *_this = (Example *)state.find_variable({ "Example", "this" }, var_cache_this).casted<vm::I64Value>()->val;
+
+			return flow_unchanged(state.create_i64(_this->ScreenHeight()));
+		});
+
+		state.create_empty_static({ "Example", "rand" }) = state.create_lambda([](const vm::LambdaValue *, const vm::args_vector &args, vm::State &state) -> vm::fivalue_t {
+			return flow_unchanged(state.create_i64(rand()));
+		});
+
+		state.create_empty_static({ "Example", "Draw" }) = state.create_lambda([](const vm::LambdaValue *, const vm::args_vector &args, vm::State &state) -> vm::fivalue_t {
+			static std::initializer_list<vm::var_block_cache> var_cache_this{ {}, {} };
+			Example *_this = (Example *)state.find_variable({ "Example", "this" }, var_cache_this).casted<vm::I64Value>()->val;
+
+			int32_t x = (int32_t)args[0].casted<vm::I64Value>()->val;
+			int32_t y = (int32_t)args[1].casted<vm::I64Value>()->val;
+
+			auto pixel_d = args[2].casted<vm::DictValue>();
+
+			static vm::var_id_cache var_cache_r;
+			static vm::var_id_cache var_cache_g;
+			static vm::var_id_cache var_cache_b;
+			static vm::var_id_cache var_cache_a;
+
+			auto p = olc::Pixel(
+				(uint8_t)pixel_d->fields.find_variable(state, "r", var_cache_r).casted<vm::I64Value>()->val,
+				(uint8_t)pixel_d->fields.find_variable(state, "g", var_cache_g).casted<vm::I64Value>()->val,
+				(uint8_t)pixel_d->fields.find_variable(state, "b", var_cache_b).casted<vm::I64Value>()->val,
+				(uint8_t)pixel_d->fields.find_variable(state, "a", var_cache_a).casted<vm::I64Value>()->val
+			);
+
+			return flow_unchanged(state.create_bool(_this->Draw(x, y, p)));
+		});
+
+		state.create_empty_static({ "Example", "olc", "Pixel" }) = state.create_lambda([](const vm::LambdaValue *, const vm::args_vector &args, vm::State &state) -> vm::fivalue_t {
+			auto d = state.create_dict();
+
+			static vm::var_id_cache var_cache_r;
+			static vm::var_id_cache var_cache_g;
+			static vm::var_id_cache var_cache_b;
+			static vm::var_id_cache var_cache_a;
+
+			d->fields.get_or_declare_variable(state, "r", var_cache_r) = state.create_i64((uint8_t)(args.size() >= 3 ? args[0].casted<vm::I64Value>()->val : 0));
+			d->fields.get_or_declare_variable(state, "g", var_cache_g) = state.create_i64((uint8_t)(args.size() >= 3 ? args[1].casted<vm::I64Value>()->val : 0));
+			d->fields.get_or_declare_variable(state, "b", var_cache_b) = state.create_i64((uint8_t)(args.size() >= 3 ? args[2].casted<vm::I64Value>()->val : 0));
+			d->fields.get_or_declare_variable(state, "a", var_cache_a) = state.create_i64((uint8_t)(args.size() >= 4 ? args[3].casted<vm::I64Value>()->val : olc::nDefaultAlpha));
+
+			return flow_unchanged(d);
+		});
+
+		vm::run(state, root);
+
+		return true;
+	}
+
+	bool OnUserUpdate(float fElapsedTime) override
+	{
+		Clear(olc::RED);
+
+		if (auto on_user_update = state.find_variable("on_user_update"))
+		{
+			if (on_user_update->type != vm::EValueType::Lambda)
+				throw 1;
+
+			auto result = vm::evaluate_call(on_user_update, {}, state);
+			(void)result;
+		}
+
+		return true;
+	}
+};
+
+
+int olc_main()
+{
+	Example demo;
+	if (demo.Construct(256, 240, 4, 4))
+		demo.Start();
+
+	return 0;
+}
+
 
 void mylang_main(int argc, const char **argv)
 {
+
+	olc_main();
+
 	std::string text = read_file("../src/mylang/mylang_test.txt");
 
 	const char *s = text.data();
@@ -2080,8 +2158,8 @@ void mylang_main(int argc, const char **argv)
 				if (on_user_update->type != vm::EValueType::Lambda)
 					throw 1;
 
-				auto result = vm::evaluate_call(on_user_update, {}, state);
-				(void)result;
+				// auto result = vm::evaluate_call(on_user_update, {}, state);
+				// (void)result;
 			}
 		}
 	}
