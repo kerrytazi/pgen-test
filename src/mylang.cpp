@@ -34,6 +34,97 @@ std::string read_file(const char *filename)
 	return buffer.str();
 }
 
+template <typename T, size_t N>
+struct allocator_with_buffer
+{
+	using value_type = T;
+
+	template <class U>
+	struct rebind { typedef allocator_with_buffer<U, N> other; };
+
+	allocator_with_buffer() = default;
+
+	explicit allocator_with_buffer(T *buffer) : _buffer{ buffer } {}
+
+	template <class U>
+	allocator_with_buffer(const allocator_with_buffer<U, N> &other) : _buffer{ (T *)other._buffer } {}
+
+	T* _buffer;
+
+	constexpr void deallocate(T *const _Ptr, const size_t _Count) {
+#if _ITERATOR_DEBUG_LEVEL != 0
+		if constexpr (std::is_same_v<T, std::_Container_proxy>)
+		{
+			return;
+		}
+#endif // _ITERATOR_DEBUG_LEVEL == 0
+
+		if (_Ptr == _buffer)
+			return;
+
+		std::allocator<T>{}.deallocate(_Ptr, _Count);
+	}
+
+	[[nodiscard]] constexpr __declspec(allocator) T *allocate(const size_t _Count) {
+#if _ITERATOR_DEBUG_LEVEL != 0
+		if constexpr (std::is_same_v<T, std::_Container_proxy>)
+		{
+			return (T *)_buffer - 1; // _buffer_Container_proxy
+		}
+#endif // _ITERATOR_DEBUG_LEVEL == 0
+
+		if (_Count <= N)
+			return _buffer;
+
+		return std::allocator<T>{}.allocate(_Count);
+	}
+};
+
+template <typename T, size_t N>
+struct small_vector : std::vector<T, allocator_with_buffer<T, N>>
+{
+#if _ITERATOR_DEBUG_LEVEL != 0
+	alignas(std::_Container_proxy)
+	char _buffer_Container_proxy[sizeof(std::_Container_proxy)];
+#endif // _ITERATOR_DEBUG_LEVEL == 0
+
+	alignas(T)
+	char _buffer[N * sizeof(T)];
+
+	using _base = std::vector<T, allocator_with_buffer<T, N>>;
+
+	small_vector() : _base(allocator_with_buffer<T, N>((T *)_buffer))
+	{
+		_base::reserve(N);
+	}
+
+	small_vector(const small_vector &other) : small_vector()
+	{
+		std::copy(other.begin(), other.end(), std::back_inserter(*this));
+	}
+
+	small_vector &operator = (const small_vector &other)
+	{
+		_base::clear();
+		std::copy(other.begin(), other.end(), std::back_inserter(*this));
+		return *this;
+	}
+
+	small_vector(small_vector &&other) : small_vector()
+	{
+		std::move(other.begin(), other.end(), std::back_inserter(*this));
+	}
+
+	small_vector &operator = (small_vector &&other)
+	{
+		_base::clear();
+		std::move(other.begin(), other.end(), std::back_inserter(*this));
+		return *this;
+	}
+};
+
+
+
 namespace vm
 {
 
@@ -42,11 +133,39 @@ struct State;
 struct LambdaValue;
 enum class EFlowChange;
 
+constexpr size_t args_vector_soo_size = 4;
+
 using ivalue_t = std::shared_ptr<IValue>;
 using fivalue_t = std::pair<ivalue_t, EFlowChange>;
-using lambda_ptr_t = fivalue_t(*)(const LambdaValue *lambda, const std::vector<ivalue_t> &args, State &state);
-using variables_t = std::unordered_map<std::string, std::shared_ptr<IValue>>;
+using args_vector = small_vector<ivalue_t, args_vector_soo_size>;
+using lambda_ptr_t = fivalue_t(*)(const LambdaValue *lambda, const args_vector &args, State &state);
 
+
+struct var_id_cache
+{
+	size_t struct_id = (size_t)-1;
+	size_t var_index = (size_t)-1;
+};
+
+struct var_block_cache : var_id_cache
+{
+	size_t block_index = (size_t)-1;
+};
+
+struct variables_t
+{
+	small_vector<ivalue_t, 16> variables;
+	size_t struct_id = 0;
+
+	size_t find_variable_index(State &state, const std::string &v, var_id_cache &cache);
+	size_t find_variable_index(State &state, const std::string &v);
+
+	ivalue_t find_variable(State &state, const std::string &v, var_id_cache &cache);
+	ivalue_t find_variable(State &state, const std::string &v);
+
+	ivalue_t &get_or_declare_variable(State &state, const std::string &v, var_id_cache &cache);
+	ivalue_t &get_or_declare_variable(State &state, const std::string &v);
+};
 
 [[maybe_unused]]
 const int _EFlowChangeVersion = 4;
@@ -103,13 +222,14 @@ struct I64Value : IValueTyped<EValueType::I64>
 struct DictValue : IValueTyped<EValueType::Dict>
 {
 	variables_t fields;
+	size_t variables_struct_id = (size_t)-1;
 };
 
 struct LambdaValue : IValueTyped<EValueType::Lambda>
 {
 	lambda_ptr_t lambda_ptr = nullptr;
 	const mylang::$$Parsed *expr_block = nullptr;
-	std::vector<std::string> args;
+	small_vector<std::string, args_vector_soo_size> args;
 	variables_t captures;
 };
 
@@ -125,12 +245,12 @@ static_assert(_EValueTypeVersion == 5, "EValueType: check shortcut");
 
 #define flow_checked(var, expr) \
 		auto _##var##_pair = expr; \
-		if (_##var##_pair.second != EFlowChange::None) \
+		if (_##var##_pair.second != vm::EFlowChange::None) \
 			return _##var##_pair; \
 		auto var = _##var##_pair.first
 
 #define flow_unchanged(expr) \
-	fivalue_t{ expr, EFlowChange::None }
+	vm::fivalue_t{ expr, vm::EFlowChange::None }
 
 template <typename TFunc>
 struct ExitScope
@@ -151,10 +271,12 @@ struct State
 	struct StateFunction
 	{
 		std::string name;
-		std::vector<std::unique_ptr<StateBlock>> blocks;
+		small_vector<std::shared_ptr<StateBlock>, 8> blocks;
+		// TODO: unique_ptr
 	};
 
 	std::vector<StateFunction> function_scopes;
+	std::vector<std::vector<std::string>> structs{ std::vector<std::string>() };
 
 	int allow_continue = false;
 	int allow_break = false;
@@ -202,7 +324,7 @@ struct State
 			if (!*v)
 				*v = std::static_pointer_cast<IValue>(create_dict());
 
-			v = &std::static_pointer_cast<DictValue>(*v)->fields[*it++];
+			v = &std::static_pointer_cast<DictValue>(*v)->fields.get_or_declare_variable(*this, *it++);
 		}
 
 		return *v;
@@ -313,10 +435,10 @@ struct State
 		assert(function_scopes.size() > 0);
 		assert(function_scopes[0].blocks.size() > 0);
 
-		return function_scopes.back().blocks.back()->variables[name];
+		return function_scopes.back().blocks.back()->variables.get_or_declare_variable(*this, name);
 	}
 
-	std::pair<ivalue_t *, StateBlock *> find_variable_with_block(const std::string &name)
+	std::pair<ivalue_t *, StateBlock *> find_variable_with_block(const std::string &name, var_block_cache &cache)
 	{
 		assert(function_scopes.size() > 0);
 		assert(function_scopes[0].blocks.size() > 0);
@@ -324,25 +446,228 @@ struct State
 		// ignore variables from caller functions
 		auto &blocks = function_scopes.back().blocks;
 
-		for (auto it = blocks.rbegin(); it != blocks.rend(); ++it)
+		if (cache.struct_id != (size_t)-1)
+			return { &blocks[cache.block_index]->variables.variables[cache.var_index], &*blocks[cache.block_index] };
+
+		size_t block_index = blocks.size() - 1;
+
+		for (auto it = blocks.rbegin(); it != blocks.rend(); ++it, --block_index)
 		{
-			if (auto v = (*it)->variables.find(name); v != (*it)->variables.end())
+			if (auto index = (*it)->variables.find_variable_index(*this, name, cache); index != (size_t)-1)
 			{
-				return { &v->second, &**it };
+				cache.block_index = block_index;
+				return { &(*it)->variables.variables[index], &**it };
 			}
 		}
 
-		return { {}, blocks.back().get() };
+		return { {}, function_scopes.back().blocks.back().get() };
 	}
 
-	ivalue_t find_variable(const std::string &name)
+	std::pair<ivalue_t *, StateBlock *> find_variable_with_block(const std::string &name)
 	{
-		if (auto v = find_variable_with_block(name).first)
+		var_block_cache cache;
+		return find_variable_with_block(name, cache);
+	}
+
+	ivalue_t find_variable(const std::string &name, var_block_cache &cache)
+	{
+		if (auto v = find_variable_with_block(name, cache).first)
 			return *v;
 
 		return {};
 	}
+
+	ivalue_t find_variable(const std::string &name)
+	{
+		var_block_cache cache;
+		return find_variable(name, cache);
+	}
+
+	ivalue_t find_variable(std::initializer_list<std::string> path, std::initializer_list<var_block_cache> cache)
+	{
+		assert(function_scopes.size() > 0);
+		assert(function_scopes[0].blocks.size() > 0);
+		assert(path.size() > 0);
+		assert(cache.size() == path.size());
+
+		auto it = path.begin();
+		auto cit = cache.begin();
+
+		auto v = find_variable(*it++, (var_block_cache &)*cit++);
+
+		for (; it != path.end(); ++it, ++cit)
+		{
+			auto &vars = std::static_pointer_cast<DictValue>(v)->fields;
+
+			if (auto vr = vars.find_variable(*this, *it, (var_block_cache &)*cit))
+			{
+				v = vr;
+			}
+			else
+			{
+				throw 1;
+			}
+		}
+
+		return v;
+	}
+
+	ivalue_t find_variable(std::initializer_list<std::string> path)
+	{
+		assert(function_scopes.size() > 0);
+		assert(function_scopes[0].blocks.size() > 0);
+		assert(path.size() > 0);
+
+		auto it = path.begin();
+
+		auto v = find_variable(*it++);
+
+		for (; it != path.end(); ++it)
+		{
+			auto &vars = std::static_pointer_cast<DictValue>(v)->fields;
+
+			if (auto vr = vars.find_variable(*this, *it))
+			{
+				v = vr;
+			}
+			else
+			{
+				throw 1;
+			}
+		}
+
+		return v;
+	}
 };
+
+
+size_t variables_t::find_variable_index(State &state, const std::string &v, var_id_cache &cache)
+{
+	if (struct_id == cache.struct_id)
+		return cache.var_index;
+
+	for (size_t i = 0; i < state.structs[struct_id].size(); ++i)
+	{
+		if (state.structs[struct_id][i] == v)
+		{
+			return i;
+		}
+	}
+
+	return (size_t)-1;
+}
+
+size_t variables_t::find_variable_index(State &state, const std::string &v)
+{
+	var_id_cache cache;
+	return find_variable_index(state, v, cache);
+}
+
+ivalue_t variables_t::find_variable(State &state, const std::string &v, var_id_cache &cache)
+{
+	if (struct_id == cache.struct_id)
+		return variables[cache.var_index];
+
+	if (auto index = find_variable_index(state, v); index != (size_t)-1)
+		return variables[index];
+
+	return {};
+}
+
+ivalue_t variables_t::find_variable(State &state, const std::string &v)
+{
+	var_id_cache cache;
+	return find_variable(state, v, cache);
+}
+
+ivalue_t &variables_t::get_or_declare_variable(State &state, const std::string &v, var_id_cache &cache)
+{
+	if (cache.struct_id != (size_t)-1)
+	{
+		if (struct_id == cache.struct_id)
+			return variables[cache.var_index];
+
+		assert(state.structs[cache.struct_id].size() == state.structs[struct_id].size() + 1);
+
+		struct_id = cache.struct_id;
+
+		return *variables.insert(variables.begin() + cache.var_index, ivalue_t{});
+	}
+
+	for (size_t i = 0; i < state.structs[struct_id].size(); ++i)
+	{
+		if (state.structs[struct_id][i] == v)
+		{
+			cache.struct_id = struct_id;
+			cache.var_index = i;
+
+			return variables[i];
+		}
+	}
+
+	for (size_t j = 1; j < state.structs.size(); ++j)
+	{
+		if (j == struct_id)
+			continue;
+
+		if (state.structs[j].size() != state.structs[struct_id].size() + 1)
+			continue;
+
+		bool found = true;
+		size_t found_i = (size_t)-1;
+
+		for (size_t il = 0, ir = 0; ir < state.structs[struct_id].size(); ++il, ++ir)
+		{
+			if (state.structs[j][il] != state.structs[struct_id][ir])
+			{
+				if (state.structs[j][il] == v)
+				{
+					assert(found_i == (size_t)-1);
+
+					found_i = il;
+					--ir;
+
+					continue;
+				}
+
+				found = false;
+				break;
+			}
+		}
+
+		if (found && found_i == (size_t)-1)
+			if (state.structs[j].back() == v)
+				found_i = state.structs[j].size() - 1;
+
+		if (found && found_i != (size_t)-1)
+		{
+			struct_id = j;
+
+			cache.struct_id = struct_id;
+			cache.var_index = found_i;
+
+			return *variables.insert(variables.begin() + found_i, ivalue_t{});
+		}
+	}
+
+	auto &new_struct = state.structs.emplace_back();
+	size_t new_struct_id = state.structs.size() - 1;
+	new_struct = state.structs[struct_id];
+	struct_id = new_struct_id;
+
+	auto diff = new_struct.insert(std::lower_bound(new_struct.begin(), new_struct.end(), v), v) - new_struct.begin();
+
+	cache.struct_id = struct_id;
+	cache.var_index = diff;
+
+	return *variables.insert(variables.begin() + diff, ivalue_t{});
+}
+
+ivalue_t &variables_t::get_or_declare_variable(State &state, const std::string &v)
+{
+	var_id_cache cache;
+	return get_or_declare_variable(state, v, cache);
+}
 
 [[nodiscard]]
 fivalue_t evaluate_expr_block(const mylang::$$Parsed &expr_block, State &state, bool new_scope);
@@ -353,7 +678,7 @@ fivalue_t evaluate_statement(const mylang::$$Parsed &statement, State &state);
 
 void fix_tree(mylang::$$Parsed &par)
 {
-	if (par.identifier == "str")
+	if (par.identifier == mylang::$$IdentifierType::$i_str)
 	{
 		auto &str = par;
 		auto &str_$g0 = str.group[1];
@@ -371,55 +696,55 @@ void fix_tree(mylang::$$Parsed &par)
 
 void optimize_tree(mylang::$$Parsed &par)
 {
-	if (par.identifier == "expr")
+	if (par.identifier == mylang::$$IdentifierType::$i_expr)
 	{
-		auto tmp = par.group[0];
-		par = tmp;
+		auto tmp = std::move(par.group[0]);
+		par = std::move(tmp);
 	}
 
-	if (par.identifier == "expr_bool_compare")
+	if (par.identifier == mylang::$$IdentifierType::$i_expr_bool_compare)
 	{
 		if (par.group.size() == 1)
 		{
-			auto tmp = par.group[0];
-			par = tmp;
+			auto tmp = std::move(par.group[0]);
+			par = std::move(tmp);
 		}
 	}
 
-	if (par.identifier == "expr_add")
+	if (par.identifier == mylang::$$IdentifierType::$i_expr_add)
 	{
 		if (par.group.size() == 1)
 		{
-			auto tmp = par.group[0];
-			par = tmp;
+			auto tmp = std::move(par.group[0]);
+			par = std::move(tmp);
 		}
 	}
 
-	if (par.identifier == "expr_mul")
+	if (par.identifier == mylang::$$IdentifierType::$i_expr_mul)
 	{
 		if (par.group.size() == 1)
 		{
-			auto tmp = par.group[0];
-			par = tmp;
+			auto tmp = std::move(par.group[0]);
+			par = std::move(tmp);
 		}
 	}
 
-	if (par.identifier == "expr_primitive")
+	if (par.identifier == mylang::$$IdentifierType::$i_expr_primitive)
 	{
 		if (par.group.size() == 1)
 		{
-			auto tmp = par.group[0];
-			par = tmp;
+			auto tmp = std::move(par.group[0]);
+			par = std::move(tmp);
 		}
 	}
 
-	if (par.identifier == "expr_group")
+	if (par.identifier == mylang::$$IdentifierType::$i_expr_group)
 	{
-		auto tmp = par.group[2];
-		par = tmp;
+		auto tmp = std::move(par.group[2]);
+		par = std::move(tmp);
 	}
 	
-	if (par.identifier == "token")
+	if (par.identifier == mylang::$$IdentifierType::$i_token)
 	{
 		auto &token = par;
 		token.literal = token.flatten();
@@ -427,7 +752,7 @@ void optimize_tree(mylang::$$Parsed &par)
 		token.group.clear();
 	}
 
-	if (par.identifier == "number")
+	if (par.identifier == mylang::$$IdentifierType::$i_number)
 	{
 		auto &number = par;
 		number.literal = number.flatten();
@@ -441,13 +766,13 @@ void optimize_tree(mylang::$$Parsed &par)
 
 void collect_captures(const mylang::$$Parsed &par, State &state, variables_t &captures)
 {
-	if (par.identifier == "token_path")
+	if (par.identifier == mylang::$$IdentifierType::$i_token_path)
 	{
 		const auto &token_path = par;
 		const auto &token = token_path.group[0];
 		std::string tok = token.flatten();
 
-		captures[tok] = state.find_variable(tok);
+		captures.get_or_declare_variable(state, tok) = state.find_variable(tok);
 	}
 	else
 	{
@@ -457,7 +782,7 @@ void collect_captures(const mylang::$$Parsed &par, State &state, variables_t &ca
 }
 
 [[nodiscard]]
-fivalue_t evaluate_call(ivalue_t func, const std::vector<ivalue_t> &args, State &state)
+fivalue_t evaluate_call(ivalue_t func, const args_vector &args, State &state)
 {
 	if (state.debug)
 		std::cout << "[debug] " << "evaluate_call" << "\n";
@@ -467,21 +792,6 @@ fivalue_t evaluate_call(ivalue_t func, const std::vector<ivalue_t> &args, State 
 
 	if (func->type != EValueType::Lambda)
 		throw 1;
-
-	[[maybe_unused]]
-	const auto func_layer = state.function_scopes.size() + 1;
-
-	{
-		state.function_scopes.emplace_back();
-	}
-
-	ExitScope _onexit([&]() {
-		{
-			assert(state.function_scopes.size() == func_layer);
-			assert(state.function_scopes.back().blocks.size() == 0);
-			state.function_scopes.pop_back();
-		}
-	});
 
 	auto save_allow_continue = state.allow_continue;
 	auto save_allow_break = state.allow_break;
@@ -522,14 +832,14 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 	if (state.debug)
 		std::cout << "[debug] " << "evaluate_expr: par = " << replace_str(par.flatten(), "\n", "") << "\n";
 
-	if (par.identifier == "expr")
+	if (par.identifier == mylang::$$IdentifierType::$i_expr)
 	{
 		const auto &expr = par;
 		const auto &expr_bool_compare = expr.group[0];
 		return evaluate_expr(expr_bool_compare, state);
 	}
 	else
-	if (par.identifier == "expr_bool_compare")
+	if (par.identifier == mylang::$$IdentifierType::$i_expr_bool_compare)
 	{
 		const auto &expr_bool_compare = par;
 		const auto &expr_add_left = expr_bool_compare.group[0];
@@ -540,7 +850,7 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 		{
 			const auto &expr_bool_compare_$g0 = expr_bool_compare.group[1];
 			const auto &expr_bool_compare_$g0_$g1 = expr_bool_compare_$g0.group[1];
-			const auto expr_add_right = expr_bool_compare_$g0.group[3];
+			const auto &expr_add_right = expr_bool_compare_$g0.group[3];
 
 			flow_checked(right, evaluate_expr(expr_add_right, state));
 
@@ -687,7 +997,7 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 		return flow_unchanged(left);
 	}
 	else
-	if (par.identifier == "expr_add")
+	if (par.identifier == mylang::$$IdentifierType::$i_expr_add)
 	{
 		const auto &expr_add = par;
 		const auto &expr_mul = expr_add.group[0];
@@ -755,7 +1065,7 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 		return flow_unchanged(left);
 	}
 	else
-	if (par.identifier == "expr_mul")
+	if (par.identifier == mylang::$$IdentifierType::$i_expr_mul)
 	{
 		const auto &expr_mul = par;
 		const auto &expr_primitive = expr_mul.group[0];
@@ -799,77 +1109,82 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 				{
 					std::static_pointer_cast<I64Value>(left)->val /= std::static_pointer_cast<I64Value>(right)->val;
 				}
+				else
+				if (sign.literal == "%")
+				{
+					std::static_pointer_cast<I64Value>(left)->val %= std::static_pointer_cast<I64Value>(right)->val;
+				}
 			}
 		}
 
 		return flow_unchanged(left);
 	}
 	else
-	if (par.identifier == "expr_primitive")
+	if (par.identifier == mylang::$$IdentifierType::$i_expr_primitive)
 	{
 		const auto &expr_primitive = par;
 		
-		if (expr_primitive.group[0].identifier == "expr_if")
+		if (expr_primitive.group[0].identifier == mylang::$$IdentifierType::$i_expr_if)
 		{
 			const auto &expr_if = expr_primitive.group[0];
 			return evaluate_expr(expr_if, state);
 		}
 		else
-		if (expr_primitive.group[0].identifier == "expr_while")
+		if (expr_primitive.group[0].identifier == mylang::$$IdentifierType::$i_expr_while)
 		{
 			const auto &expr_while = expr_primitive.group[0];
 			return evaluate_expr(expr_while, state);
 		}
 		else
-		if (expr_primitive.group[0].identifier == "expr_call")
+		if (expr_primitive.group[0].identifier == mylang::$$IdentifierType::$i_expr_call)
 		{
 			const auto &expr_call = expr_primitive.group[0];
 			return evaluate_expr(expr_call, state);
 		}
 		else
-		if (expr_primitive.group[0].identifier == "expr_function")
+		if (expr_primitive.group[0].identifier == mylang::$$IdentifierType::$i_expr_function)
 		{
 			const auto &expr_function = expr_primitive.group[0];
 			return evaluate_expr(expr_function, state);
 		}
 		else
-		if (expr_primitive.group[0].identifier == "kv_boolean")
+		if (expr_primitive.group[0].identifier == mylang::$$IdentifierType::$i_kv_boolean)
 		{
 			const auto &kv_boolean = expr_primitive.group[0];
 			return evaluate_expr(kv_boolean, state);
 		}
 		else
-		if (expr_primitive.group[0].identifier == "str")
+		if (expr_primitive.group[0].identifier == mylang::$$IdentifierType::$i_str)
 		{
 			const auto &str = expr_primitive.group[0];
 			return evaluate_expr(str, state);
 		}
 		else
-		if (expr_primitive.group[0].identifier == "number")
+		if (expr_primitive.group[0].identifier == mylang::$$IdentifierType::$i_number)
 		{
 			const auto &number = expr_primitive.group[0];
 			return evaluate_expr(number, state);
 		}
 		else
-		if (expr_primitive.group[0].identifier == "expr_assign")
+		if (expr_primitive.group[0].identifier == mylang::$$IdentifierType::$i_expr_assign)
 		{
 			const auto &expr_assign = expr_primitive.group[0];
 			return evaluate_expr(expr_assign, state);
 		}
 		else
-		if (expr_primitive.group[0].identifier == "token_path")
+		if (expr_primitive.group[0].identifier == mylang::$$IdentifierType::$i_token_path)
 		{
 			const auto &token_path = expr_primitive.group[0];
 			return evaluate_expr(token_path, state);
 		}
 		else
-		if (expr_primitive.group[0].identifier == "expr_group")
+		if (expr_primitive.group[0].identifier == mylang::$$IdentifierType::$i_expr_group)
 		{
 			const auto &expr_group = expr_primitive.group[0];
 			return evaluate_expr(expr_group, state);
 		}
 		else
-		if (expr_primitive.group[0].identifier == "expr_block")
+		if (expr_primitive.group[0].identifier == mylang::$$IdentifierType::$i_expr_block)
 		{
 			const auto &expr_block = expr_primitive.group[0];
 			return evaluate_expr(expr_block, state);
@@ -880,15 +1195,15 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 		}
 	}
 	else
-	if (par.identifier == "kv_boolean")
+	if (par.identifier == mylang::$$IdentifierType::$i_kv_boolean)
 	{
 		const auto &kv_boolean = par;
-		if (kv_boolean.group[0].identifier == "kv_false")
+		if (kv_boolean.group[0].identifier == mylang::$$IdentifierType::$i_kv_false)
 		{
 			return flow_unchanged(state.create_bool(false));
 		}
 		else
-		if (kv_boolean.group[0].identifier == "kv_true")
+		if (kv_boolean.group[0].identifier == mylang::$$IdentifierType::$i_kv_true)
 		{
 			return flow_unchanged(state.create_bool(true));
 		}
@@ -898,53 +1213,53 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 		}
 	}
 	else
-	if (par.identifier == "str")
+	if (par.identifier == mylang::$$IdentifierType::$i_str)
 	{
 		const auto &str = par;
 		const auto &str_$g0 = str.group[1];
 		return flow_unchanged(state.create_str(str_$g0.flatten()));
 	}
 	else
-	if (par.identifier == "number")
+	if (par.identifier == mylang::$$IdentifierType::$i_number)
 	{
 		const auto &number = par;
 		return flow_unchanged(state.create_i64(atoll(number.flatten().c_str())));
 	}
 	else
-	if (par.identifier == "token_path")
+	if (par.identifier == mylang::$$IdentifierType::$i_token_path)
 	{
 		const auto &token_path = par;
 		return flow_unchanged(evaluate_token_path(token_path, state, false));
 	}
 	else
-	if (par.identifier == "expr_group")
+	if (par.identifier == mylang::$$IdentifierType::$i_expr_group)
 	{
 		const auto &expr_group = par;
 		const auto &expr = expr_group.group[2];
 		return evaluate_expr(expr, state);
 	}
 	else
-	if (par.identifier == "expr_call")
+	if (par.identifier == mylang::$$IdentifierType::$i_expr_call)
 	{
 		const auto &expr_call = par;
 		const auto &expr_call_$g0 = expr_call.group[0];
 
 		ivalue_t func;
 
-		if (expr_call_$g0.group[0].identifier == "token_path")
+		if (expr_call_$g0.group[0].identifier == mylang::$$IdentifierType::$i_token_path)
 		{
 			const auto &token_path = expr_call_$g0.group[0];
 			func = evaluate_token_path(token_path, state, false);
 		}
 		else
-		if (expr_call_$g0.group[0].identifier == "expr_group")
+		if (expr_call_$g0.group[0].identifier == mylang::$$IdentifierType::$i_expr_group)
 		{
 			const auto &expr_group = expr_call_$g0.group[0];
 			flow_checked(cheked, evaluate_expr(expr_group, state));
 			func = cheked;
 		}
 		else
-		if (expr_call_$g0.group[0].identifier == "expr_function")
+		if (expr_call_$g0.group[0].identifier == mylang::$$IdentifierType::$i_expr_function)
 		{
 			const auto &expr_function = expr_call_$g0.group[0];
 			flow_checked(cheked, evaluate_expr(expr_function, state));
@@ -955,9 +1270,9 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 			throw 1;
 		}
 
-		std::vector<ivalue_t> args;
+		args_vector args;
 
-		if (const auto *expr_call_$g3 = expr_call.find("expr_call_$g3"))
+		if (const auto *expr_call_$g3 = expr_call.find(mylang::$$IdentifierType::$i_expr_call_$g3))
 		{
 			const auto &expr = expr_call_$g3->group[0];
 			flow_checked(cheked, evaluate_expr(expr, state));
@@ -965,7 +1280,7 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 
 			for (size_t i = 1; i < expr_call_$g3->group.size(); ++i)
 			{
-				if (expr_call_$g3->group[i].identifier == "expr_call_$g3_$g1")
+				if (expr_call_$g3->group[i].identifier == mylang::$$IdentifierType::$i_expr_call_$g3_$g1)
 				{
 					const auto &expr_call_$g3_$g1 = expr_call_$g3->group[i];
 
@@ -979,52 +1294,63 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 		return evaluate_call(func, args, state);
 	}
 	else
-	if (par.identifier == "expr_function")
+	if (par.identifier == mylang::$$IdentifierType::$i_expr_function)
 	{
 		const auto &expr_function = par;
 
-		auto l = state.create_lambda([](const LambdaValue *lambda, const std::vector<ivalue_t> &args, State &state) -> fivalue_t {
+		auto l = state.create_lambda([](const LambdaValue *lambda, const args_vector &args, State &state) -> fivalue_t {
 
 			if (lambda->args.size() != args.size())
 				throw 1;
 
+			[[maybe_unused]]
+			const auto func_layer = state.function_scopes.size() + 1;
+
 			{
-				assert(state.function_scopes.size() > 0);
+				auto &func = state.function_scopes.emplace_back();
 
 				{
-					auto &captures_block = state.function_scopes.back().blocks.emplace_back(std::make_unique<State::StateBlock>());
+					auto &captures_block = func.blocks.emplace_back(std::make_shared<State::StateBlock>());
 
 					captures_block->variables = lambda->captures;
 				}
 
 				{
-					auto &arguments_block = state.function_scopes.back().blocks.emplace_back(std::make_unique<State::StateBlock>());
+					auto &arguments_block = func.blocks.emplace_back(std::make_shared<State::StateBlock>());
 
 					for (size_t i = 0; i < args.size(); ++i)
-						arguments_block->variables.insert({ lambda->args[i], args[i] });
+						arguments_block->variables.get_or_declare_variable(state, lambda->args[i]) = args[i];
 				}
 			}
+
+			ExitScope _onexit([&]() {
+				{
+					assert(state.function_scopes.back().blocks.size() == 2);
+					state.function_scopes.back().blocks.clear();
+				}
+
+				{
+					assert(state.function_scopes.size() == func_layer);
+					assert(state.function_scopes.back().blocks.size() == 0);
+					state.function_scopes.pop_back();
+				}
+			});
 
 			const auto *expr_block = lambda->expr_block;
 
 			auto result = evaluate_expr_block(*expr_block, state, false);
 
-			{
-				assert(state.function_scopes.back().blocks.size() == 2);
-				state.function_scopes.back().blocks.clear();
-			}
-
 			return result;
 		});
 
-		if (const auto *expr_function_$g1 = expr_function.find("expr_function_$g1"))
+		if (const auto *expr_function_$g1 = expr_function.find(mylang::$$IdentifierType::$i_expr_function_$g1))
 		{
 			const auto &token = expr_function_$g1->group[0];
 			l->args.push_back(token.flatten());
 
 			for (size_t i = 1; i < expr_function_$g1->group.size(); ++i)
 			{
-				if (expr_function_$g1->group[i].identifier == "expr_function_$g1_$g1")
+				if (expr_function_$g1->group[i].identifier == mylang::$$IdentifierType::$i_expr_function_$g1_$g1)
 				{
 					const auto &expr_function_$g1_$g1 = expr_function_$g1->group[i];
 					const auto &token = expr_function_$g1_$g1.group[2];
@@ -1033,7 +1359,7 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 			}
 		}
 
-		l->expr_block = expr_function.find("expr_block");
+		l->expr_block = expr_function.find(mylang::$$IdentifierType::$i_expr_block);
 		assert(l->expr_block);
 
 		collect_captures(*l->expr_block, state, l->captures);
@@ -1041,7 +1367,7 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 		return flow_unchanged(l);
 	}
 	else
-	if (par.identifier == "expr_if")
+	if (par.identifier == mylang::$$IdentifierType::$i_expr_if)
 	{
 		const auto &expr_if = par;
 		const auto &expr = expr_if.group[4];
@@ -1060,7 +1386,7 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 		}
 		else
 		{
-			if (const auto *expr_if_$g4 = expr_if.find("expr_if_$g4"))
+			if (const auto *expr_if_$g4 = expr_if.find(mylang::$$IdentifierType::$i_expr_if_$g4))
 			{
 				const auto &expr_block = expr_if_$g4->group[3];
 				return evaluate_expr(expr_block, state);
@@ -1072,7 +1398,7 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 		}
 	}
 	else
-	if (par.identifier == "expr_while")
+	if (par.identifier == mylang::$$IdentifierType::$i_expr_while)
 	{
 		const auto &expr_while = par;
 		const auto &expr = expr_while.group[4];
@@ -1159,7 +1485,7 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 			}
 		}
 
-		if (const auto *expr_while_$g4 = expr_while.find("expr_while_$g4"))
+		if (const auto *expr_while_$g4 = expr_while.find(mylang::$$IdentifierType::$i_expr_while_$g4))
 		{
 			const auto &expr_block = expr_while_$g4->group[3];
 			return evaluate_expr(expr_block, state);
@@ -1170,20 +1496,13 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 		}
 	}
 	else
-	if (par.identifier == "expr_bool")
-	{
-		const auto &expr_bool = par;
-		const auto &expr_bool_compare = expr_bool.group[0];
-		return evaluate_expr(expr_bool_compare, state);
-	}
-	else
-	if (par.identifier == "expr_block")
+	if (par.identifier == mylang::$$IdentifierType::$i_expr_block)
 	{
 		const auto &expr_block = par;
 		return evaluate_expr_block(expr_block, state, true);
 	}
 	else
-	if (par.identifier == "expr_assign")
+	if (par.identifier == mylang::$$IdentifierType::$i_expr_assign)
 	{
 		const auto &expr_assign = par;
 		const auto &token_path = expr_assign.group[0];
@@ -1209,7 +1528,7 @@ fivalue_t evaluate_expr_block(const mylang::$$Parsed &expr_block, State &state, 
 	if (state.debug)
 		std::cout << "[debug] " << "evaluate_expr_block, expr_bloc = " << replace_str(expr_block.flatten(), "\n", "") << "\n";
 
-	assert(expr_block.identifier == "expr_block");
+	assert(expr_block.identifier == mylang::$$IdentifierType::$i_expr_block);
 
 	[[maybe_unused]]
 	size_t scope_layer = 0;
@@ -1217,7 +1536,7 @@ fivalue_t evaluate_expr_block(const mylang::$$Parsed &expr_block, State &state, 
 	if (new_scope)
 	{
 		assert(state.function_scopes.size() > 0);
-		state.function_scopes.back().blocks.emplace_back(std::make_unique<State::StateBlock>());
+		state.function_scopes.back().blocks.emplace_back(std::make_shared<State::StateBlock>());
 		scope_layer = state.function_scopes.back().blocks.size();
 	}
 
@@ -1232,7 +1551,7 @@ fivalue_t evaluate_expr_block(const mylang::$$Parsed &expr_block, State &state, 
 
 	for (size_t i = 1; i < expr_block.group.size() - 1; ++i)
 	{
-		if (expr_block.group[i].identifier == "expr_block_$g1")
+		if (expr_block.group[i].identifier == mylang::$$IdentifierType::$i_expr_block_$g1)
 		{
 			const auto &expr_block_g1 = expr_block.group[i];
 			const auto &statement = expr_block_g1.group[0];
@@ -1241,7 +1560,7 @@ fivalue_t evaluate_expr_block(const mylang::$$Parsed &expr_block, State &state, 
 		}
 	}
 
-	if (const auto* expr_block_$g2 = expr_block.find("expr_block_$g2"))
+	if (const auto* expr_block_$g2 = expr_block.find(mylang::$$IdentifierType::$i_expr_block_$g2))
 	{
 		const auto &expr = expr_block_$g2->group[0];
 		return evaluate_expr(expr, state);
@@ -1256,11 +1575,130 @@ ivalue_t &evaluate_token_path(const mylang::$$Parsed &token_path, State &state, 
 	if (state.debug)
 		std::cout << "[debug] " << "evaluate_token_path: token_path = " << replace_str(token_path.flatten(), "\n", "") <<  "\n";
 
-	assert(token_path.identifier == "token_path");
+	assert(token_path.identifier == mylang::$$IdentifierType::$i_token_path);
+
+#if 1
+
+	struct TokenPathParsedCustomData : mylang::$$ParsedCustomData
+	{
+		size_t function_index = 0;
+		size_t block_index = 0;
+
+		std::vector<var_id_cache> var_ids;
+	};
+
+	if (token_path.custom_data)
+	{
+		TokenPathParsedCustomData &custom_data = *static_cast<TokenPathParsedCustomData *>(token_path.custom_data.get());
+
+		variables_t *vars = &state.function_scopes[custom_data.function_index].blocks[custom_data.block_index]->variables;
+
+		bool found = true;
+		ivalue_t *val = nullptr;
+
+		assert(custom_data.var_ids.size() > 0);
+
+		for (size_t i = 0; i < custom_data.var_ids.size(); ++i)
+		{
+			if (vars->struct_id == custom_data.var_ids[i].struct_id)
+			{
+				val = &vars->variables[custom_data.var_ids[i].var_index];
+
+				if (i + 1 != custom_data.var_ids.size())
+				{
+					if (!val)
+						throw 1;
+
+					if (!(*val))
+						throw 1;
+
+					if ((*val)->type != EValueType::Dict)
+						throw 1;
+
+					vars = &std::static_pointer_cast<DictValue>(*val)->fields;
+				}
+			}
+			else
+			{
+				found = false;
+				break;
+			}
+		}
+
+		if (found)
+			return *val;
+	}
 
 	const auto &token = token_path.group[0];
 
 	std::string tok = token.flatten();
+
+	{
+		auto [val, block] = state.find_variable_with_block(tok);
+		variables_t *vars = &block->variables;
+
+		for (size_t i_f = 0; i_f != state.function_scopes.size(); ++i_f)
+		{
+			for (size_t i_b = 0; i_b != state.function_scopes[i_f].blocks.size(); ++i_b)
+			{
+				if (&block->variables == &state.function_scopes[i_f].blocks[i_b]->variables)
+				{
+					TokenPathParsedCustomData custom_data;
+
+					custom_data.function_index = i_f;
+					custom_data.block_index = i_b;
+
+					if (val)
+						custom_data.var_ids.push_back({ vars->struct_id, vars->find_variable_index(state, tok) });
+
+					for (size_t i = 1; i < token_path.group.size(); ++i)
+					{
+						const auto &token_path_$g0 = token_path.group[i];
+						const auto &token = token_path_$g0.group[3];
+
+						if (!val)
+							throw 1;
+
+						if (!(*val))
+							throw 1;
+
+						if ((*val)->type != EValueType::Dict)
+							throw 1;
+
+						vars = &std::static_pointer_cast<DictValue>(*val)->fields;
+						tok = token.flatten();
+
+						if (auto index = vars->find_variable_index(state, tok); index == (size_t)-1)
+						{
+							val = nullptr;
+						}
+						else
+						{
+							val = &vars->variables[index];
+							custom_data.var_ids.push_back({ vars->struct_id, index });
+						}
+					}
+
+					if (!val || !*val)
+					{
+						if (!assign || token_path.group.size() == 1)
+							throw 1;
+
+						val = &vars->get_or_declare_variable(state, tok);
+
+						custom_data.var_ids.push_back({ vars->struct_id, vars->find_variable_index(state, tok) });
+					}
+
+					token_path.custom_data = std::make_unique<TokenPathParsedCustomData>(std::move(custom_data));
+
+					return *val;
+				}
+			}
+		}
+	}
+
+	throw 1;
+#else
 	auto [val, block] = state.find_variable_with_block(tok);
 	variables_t *vars = &block->variables;
 
@@ -1281,10 +1719,10 @@ ivalue_t &evaluate_token_path(const mylang::$$Parsed &token_path, State &state, 
 		vars = &std::static_pointer_cast<DictValue>(*val)->fields;
 		tok = token.flatten();
 
-		if (auto it = vars->find(tok); it == vars->end())
+		if (auto index = vars->find_variable_index(state, tok); index == (size_t)-1)
 			val = nullptr;
 		else
-			val = &it->second;
+			val = &vars->variables[index];
 	}
 
 	if (!val || !*val)
@@ -1292,10 +1730,11 @@ ivalue_t &evaluate_token_path(const mylang::$$Parsed &token_path, State &state, 
 		if (!assign || token_path.group.size() == 1)
 			throw 1;
 
-		val = &vars->insert({ tok, {} }).first->second;
+		val = &vars->get_or_declare_variable(state, tok);
 	}
 
 	return *val;
+#endif
 }
 
 [[nodiscard]]
@@ -1304,9 +1743,9 @@ fivalue_t evaluate_statement(const mylang::$$Parsed &statement, State &state)
 	if (state.debug)
 		std::cout << "[debug] " << "evaluate_statement: statement = " << replace_str(statement.flatten(), "\n", "") <<  "\n";
 
-	assert(statement.identifier == "statement");
+	assert(statement.identifier == mylang::$$IdentifierType::$i_statement);
 
-	if (statement.group[0].identifier == "statement_if")
+	if (statement.group[0].identifier == mylang::$$IdentifierType::$i_statement_if)
 	{
 		const auto &statement_if = statement.group[0];
 		const auto &expr_if = statement_if.group[0];
@@ -1315,7 +1754,7 @@ fivalue_t evaluate_statement(const mylang::$$Parsed &statement, State &state)
 		return flow_unchanged({});
 	}
 	else
-	if (statement.group[0].identifier == "statement_while")
+	if (statement.group[0].identifier == mylang::$$IdentifierType::$i_statement_while)
 	{
 		const auto &statement_while = statement.group[0];
 		const auto &expr_while = statement_while.group[0];
@@ -1324,7 +1763,7 @@ fivalue_t evaluate_statement(const mylang::$$Parsed &statement, State &state)
 		return flow_unchanged({});
 	}
 	else
-	if (statement.group[0].identifier == "statement_block")
+	if (statement.group[0].identifier == mylang::$$IdentifierType::$i_statement_block)
 	{
 		const auto &statement_block = statement.group[0];
 		const auto &expr_block = statement_block.group[0];
@@ -1333,7 +1772,7 @@ fivalue_t evaluate_statement(const mylang::$$Parsed &statement, State &state)
 		return flow_unchanged({});
 	}
 	else
-	if (statement.group[0].identifier == "statement_let")
+	if (statement.group[0].identifier == mylang::$$IdentifierType::$i_statement_let)
 	{
 		const auto &statement_assign = statement.group[0];
 		const auto &statement_assign_$g1 = statement_assign.group[2];
@@ -1343,29 +1782,27 @@ fivalue_t evaluate_statement(const mylang::$$Parsed &statement, State &state)
 		assert(state.function_scopes.size() > 0);
 		assert(state.function_scopes.back().blocks.size() > 0);
 
-		if (auto insert_result = state.function_scopes.back().blocks.back()->variables.insert({ token.flatten(), {} }); insert_result.second)
-		{
-			ivalue_t &res = insert_result.first->second;
+		std::string tok = token.flatten();
 
-			flow_checked(checked, evaluate_expr(expr, state));
-			res = state.refval_copy(checked);
-
-			if (statement_assign_$g1.group.size() == 0 && res)
-				res->const_value = true;
-		}
-		else
-		{
+		if (size_t index = state.function_scopes.back().blocks.back()->variables.find_variable_index(state, tok); index != (size_t)-1)
 			throw 1;
-		}
+
+		ivalue_t &res = state.function_scopes.back().blocks.back()->variables.get_or_declare_variable(state, tok);
+
+		flow_checked(checked, evaluate_expr(expr, state));
+		res = state.refval_copy(checked);
+
+		if (statement_assign_$g1.group.size() == 0 && res)
+			res->const_value = true;
 
 		return flow_unchanged({});
 	}
 	else
-	if (statement.group[0].identifier == "statement_return")
+	if (statement.group[0].identifier == mylang::$$IdentifierType::$i_statement_return)
 	{
 		const auto &statement_return = statement.group[0];
 
-		if (auto statement_return_$g0 = statement_return.find("statement_return_$g0"))
+		if (auto statement_return_$g0 = statement_return.find(mylang::$$IdentifierType::$i_statement_return_$g0))
 		{
 			const auto &expr = statement_return_$g0->group[1];
 			flow_checked(checked, evaluate_expr(expr, state));
@@ -1377,7 +1814,7 @@ fivalue_t evaluate_statement(const mylang::$$Parsed &statement, State &state)
 		}
 	}
 	else
-	if (statement.group[0].identifier == "statement_continue")
+	if (statement.group[0].identifier == mylang::$$IdentifierType::$i_statement_continue)
 	{
 		const auto &statement_continue = statement.group[0];
 		(void)statement_continue;
@@ -1388,14 +1825,14 @@ fivalue_t evaluate_statement(const mylang::$$Parsed &statement, State &state)
 		return fivalue_t{ {}, EFlowChange::Continue };
 	}
 	else
-	if (statement.group[0].identifier == "statement_break")
+	if (statement.group[0].identifier == mylang::$$IdentifierType::$i_statement_break)
 	{
 		const auto &statement_break = statement.group[0];
 
 		if (!state.allow_break)
 			throw 1;
 
-		if (auto statement_break_$g0 = statement_break.find("statement_break_$g0"))
+		if (auto statement_break_$g0 = statement_break.find(mylang::$$IdentifierType::$i_statement_break_$g0))
 		{
 			const auto &expr = statement_break_$g0->group[1];
 			flow_checked(checked, evaluate_expr(expr, state));
@@ -1407,7 +1844,7 @@ fivalue_t evaluate_statement(const mylang::$$Parsed &statement, State &state)
 		}
 	}
 	else
-	if (statement.group[0].identifier == "statement_expr")
+	if (statement.group[0].identifier == mylang::$$IdentifierType::$i_statement_expr)
 	{
 		const auto &statement_expr = statement.group[0];
 		const auto &expr = statement_expr.group[0];
@@ -1421,26 +1858,18 @@ fivalue_t evaluate_statement(const mylang::$$Parsed &statement, State &state)
 	}
 }
 
-struct RunParams
+State prepare_state()
 {
-	std::function<void(State &state)> before_run;
-	std::function<void(State &state)> after_run;
-};
-
-void run(const mylang::$$Parsed &root, const RunParams &params = {})
-{
-	assert(root.identifier == "root");
-
 	State state;
 	// state.debug = true;
 
 	{
 		auto &func = state.function_scopes.emplace_back();
 		func.name = "<global>";
-		func.blocks.emplace_back(std::make_unique<State::StateBlock>());
+		func.blocks.emplace_back(std::make_shared<State::StateBlock>());
 	}
 
-	state.create_empty_static({"std","print"}) = state.create_lambda([](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> fivalue_t {
+	state.create_empty_static({"std","print"}) = state.create_lambda([](const LambdaValue *, const args_vector &args, State &state) -> fivalue_t {
 		for (size_t i = 0; i < args.size(); ++i)
 		{
 			if (i != 0)
@@ -1467,7 +1896,7 @@ void run(const mylang::$$Parsed &root, const RunParams &params = {})
 		return flow_unchanged({});
 	});
 
-	state.create_empty_static({"std","bool"}) = state.create_lambda([](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> fivalue_t {
+	state.create_empty_static({"std","bool"}) = state.create_lambda([](const LambdaValue *, const args_vector &args, State &state) -> fivalue_t {
 		if (args.size() != 1)
 			throw 1;
 
@@ -1499,7 +1928,7 @@ void run(const mylang::$$Parsed &root, const RunParams &params = {})
 		}
 	});
 
-	state.create_empty_static({"std","str"}) = state.create_lambda([](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> fivalue_t {
+	state.create_empty_static({"std","str"}) = state.create_lambda([](const LambdaValue *, const args_vector &args, State &state) -> fivalue_t {
 		if (args.size() != 1)
 			throw 1;
 
@@ -1530,7 +1959,7 @@ void run(const mylang::$$Parsed &root, const RunParams &params = {})
 		}
 	});
 
-	state.create_empty_static({"std","i64"}) = state.create_lambda([](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> fivalue_t {
+	state.create_empty_static({"std","i64"}) = state.create_lambda([](const LambdaValue *, const args_vector &args, State &state) -> fivalue_t {
 		if (args.size() != 1)
 			throw 1;
 
@@ -1561,27 +1990,31 @@ void run(const mylang::$$Parsed &root, const RunParams &params = {})
 		}
 	});
 
-	state.create_empty_static({"std","dict"}) = state.create_lambda([](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> fivalue_t {
+	state.create_empty_static({"std","dict"}) = state.create_lambda([](const LambdaValue *, const args_vector &args, State &state) -> fivalue_t {
 		return flow_unchanged(state.create_dict());
 	});
 
-	state.create_empty_static({"std","null"}) = state.create_lambda([](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> fivalue_t {
+	state.create_empty_static({"std","null"}) = state.create_lambda([](const LambdaValue *, const args_vector &args, State &state) -> fivalue_t {
 		return flow_unchanged({});
 	});
 
-	state.create_empty_static({"std","is_null"}) = state.create_lambda([](const LambdaValue *, const std::vector<ivalue_t> &args, State &state) -> fivalue_t {
+	state.create_empty_static({"std","is_null"}) = state.create_lambda([](const LambdaValue *, const args_vector &args, State &state) -> fivalue_t {
 		if (args.size() != 1)
 			throw 1;
 
 		return flow_unchanged(state.create_bool((bool)args[0]));
 	});
 
-	if (params.before_run)
-		params.before_run(state);
+	return state;
+}
+
+void run(State &state, const mylang::$$Parsed &root)
+{
+	assert(root.identifier == mylang::$$IdentifierType::$i_root);
 
 	for (size_t i = 0; i < root.group.size(); ++i)
 	{
-		if (root.group[i].identifier == "root_$g1")
+		if (root.group[i].identifier == mylang::$$IdentifierType::$i_root_$g1)
 		{
 			const auto &root_$g1 = root.group[i];
 			const auto &statement = root_$g1.group[0];
@@ -1592,9 +2025,6 @@ void run(const mylang::$$Parsed &root, const RunParams &params = {})
 				throw 1;
 		}
 	}
-
-	if (params.after_run)
-		params.after_run(state);
 
 	assert(state.function_scopes.size() == 1);
 	assert(state.function_scopes[0].blocks.size() == 1);
@@ -1611,9 +2041,9 @@ void mylang_main(int argc, const char **argv)
 	const char *s = text.data();
 	const char *e = s + text.size();
 
-	auto result = mylang::$parse_root(s, e).value();
+	auto root = mylang::$parse_root(s, e).value();
 
-	// std::cout << mylang::helpers::generate_graphviz(result);
+	// std::cout << mylang::helpers::generate_graphviz(root);
 
 	int b = 0;
 
@@ -1631,34 +2061,29 @@ void mylang_main(int argc, const char **argv)
 		colors["kv_if"] = "\033[95m";
 		colors["kv_while"] = "\033[95m";
 		colors["kv_else"] = "\033[95m";
-		std::cout << "--- code begin ---\n" << mylang::helpers::ansii_colored(result, colors, "\033[0m") << "--- code end ---\n";
+		std::cout << "--- code begin ---\n" << mylang::helpers::ansii_colored(root, colors, "\033[0m") << "--- code end ---\n";
 	}
 
 	std::cout << "--- program begin ---\n";
 
 	{
-		vm::RunParams params;
+		vm::fix_tree(root);
+		vm::optimize_tree(root);
+		auto state = vm::prepare_state();
+		vm::run(state, root);
 
-		params.before_run = [](vm::State &state) {
-		};
-
-		params.after_run = [](vm::State &state) {
+		{
 			auto &vars = state.function_scopes[0].blocks[0]->variables;
 
-			if (auto on_user_update_it = vars.find("on_user_update"); on_user_update_it != vars.end())
+			if (auto on_user_update = vars.find_variable(state, "on_user_update"))
 			{
-				auto on_user_update = on_user_update_it->second;
-
 				if (on_user_update->type != vm::EValueType::Lambda)
 					throw 1;
 
-				vm::evaluate_call(on_user_update, { state.create_i64(123), state.create_str("hello") }, state);
+				auto result = vm::evaluate_call(on_user_update, {}, state);
+				(void)result;
 			}
-		};
-
-		vm::fix_tree(result);
-		vm::optimize_tree(result);
-		vm::run(result, params);
+		}
 	}
 
 	std::cout << "--- program end ---\n";

@@ -65,7 +65,7 @@ expr_group: "(" (ws*) expr (ws*) ")"
 
 expr_primitive: expr_if | expr_while | expr_call | expr_function | kv_boolean | str | number | expr_assign | token_path | expr_group | expr_block
 
-expr_mul: expr_primitive ((ws*) ("*" | "/") (ws*) expr_primitive)*
+expr_mul: expr_primitive ((ws*) ("*" | "/" | "%") (ws*) expr_primitive)*
 
 expr_add: expr_mul ((ws*) ("+" | "-") (ws*) expr_mul)*
 
