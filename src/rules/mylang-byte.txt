@@ -1,0 +1,106 @@
+
+digit_binary: "0" | "1"
+
+digit_octal: digit_binary | "2" | "3" | "4" | "5" | "6" | "7"
+
+digit_decimal: digit_octal | "8" | "9"
+
+digit_hex: digit_decimal | "A" | "B" | "C" | "D" | "E" | "F" | "a" | "b" | "c" | "d" | "e" | "f"
+
+letter_upper: "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J" | "K" | "L" | "M" | "N" | "O" | "P" | "Q" | "R" | "S" | "T" | "U" | "V" | "W" | "X" | "Y" | "Z"
+
+letter_lower: "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "i" | "j" | "k" | "l" | "m" | "n" | "o" | "p" | "q" | "r" | "s" | "t" | "u" | "v" | "w" | "x" | "y" | "z"
+
+ws: "\n" | "\r" | " " | "\t"
+
+ws0: ws*
+
+ws1: ws+
+
+str: "\"" (("\\\"" | "\""^)*) "\""
+
+kv_return: "return"
+
+kv_continue: "continue"
+
+kv_break: "break"
+
+kv_let: "let"
+
+kv_mut: "mut"
+
+kv_while: "while"
+
+kv_if: "if"
+
+kv_else: "else"
+
+kv_false: "false"
+
+kv_true: "true"
+
+kv_boolean: kv_false | kv_true
+
+
+letter: letter_lower | letter_upper
+
+number_hex: "0x" digit_hex+
+
+number_decimal: digit_decimal+
+
+number_octal: "0o" digit_octal+
+
+number_binary: "0b" digit_binary+
+
+number: number_hex | number_decimal | number_octal | number_binary
+
+token: (letter | "_") (letter | digit_decimal | "_")*
+
+token_path: token ((ws0 "." ws0 token)*)
+
+
+expr_function: "|" ws0 (token ws0 ("," ws0 token ws0)*)? "|" ws0 expr_block
+
+expr_block: "{" ws0 ((statement ws0)*) ((expr ws0)?) "}"
+
+expr_call: (token_path | expr_group | expr_function) ws0 "(" ws0 ((expr ws0 (("," ws0 expr ws0)*))?) ")"
+
+expr_group: "(" ws0 expr ws0 ")"
+
+expr_primitive: expr_if | expr_while | expr_call | expr_function | kv_boolean | str | number | expr_assign | token_path | expr_group | expr_block
+
+expr_mul: expr_primitive ((ws0 ("*" | "/" | "%") ws0 expr_primitive)*)
+
+expr_add: expr_mul ((ws0 ("+" | "-") ws0 expr_mul)*)
+
+expr_compare: expr_add ((ws0 ("<=" | ">=" | "<" | ">" | "==" | "!=") ws0 expr_add)?)
+
+expr_if: kv_if ws0 "(" ws0 expr ws0 ")" ws0 expr_block (ws0 kv_else ws0 expr_block)?
+
+expr_while: kv_while ws0 "(" ws0 expr ws0 ")" ws0 expr_block (ws0 kv_else ws0 expr_block)?
+
+expr_assign: token_path ws0 "=" ws0 expr
+
+expr: expr_compare
+
+
+statement_let: kv_let ws1 ((kv_mut ws+)?) token ws0 "=" ws0 expr ws0 ";"
+
+statement_return: kv_return ((ws1 expr)?) ws0 ";"
+
+statement_continue: kv_continue ws0 ";"
+
+statement_break: kv_break ((ws1 expr)?) ws0 ";"
+
+statement_expr: expr ws0 ";"
+
+statement_if: expr_if
+
+statement_while: expr_while
+
+statement_block: expr_block
+
+statement: statement_if | statement_while | statement_block | statement_let | statement_return | statement_continue | statement_break | statement_expr
+
+
+root: ws0 ((statement ws0)*)

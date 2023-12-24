@@ -14,6 +14,8 @@
 #include <unordered_set>
 #include <ranges>
 #include <functional>
+#include <variant>
 
 #include <new>
 #include <utility>
+#include <array>

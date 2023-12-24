@@ -3,6 +3,7 @@
 #include <new>
 #include <utility>
 #include <cassert>
+#include <array>
 
 template <typename T, typename _Counter>
 struct sptr_block;

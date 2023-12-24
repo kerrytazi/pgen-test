@@ -5,14 +5,14 @@ namespace test::helpers
 {
 
 
-std::string generate_tree_simple(const $$Parsed &p, size_t align = 0)
+std::string generate_tree_simple(const $Parsed &p, size_t align = 0)
 {
 	std::string result;
 
-	if (p.type == $$ParsedType::Literal)
+	if (p.type == $ParsedType::Literal)
 		result += std::string(align, ' ') + "'" + std::string(p.literal) + "'\n";
 
-	if (p.type == $$ParsedType::Identifier || p.type == $$ParsedType::Group)
+	if (p.type == $ParsedType::Identifier || p.type == $ParsedType::Group)
 	{
 		int new_align = align;
 
@@ -40,9 +40,9 @@ struct State
 	// std::unordered_map<std::string, uint64_t> marks;
 };
 
-void evaluate2(const test::$$Parsed &p, State &state)
+void evaluate2(const test::$Parsed &p, State &state)
 {
-	if (p.identifier == test::$$IdentifierType::$i_root)
+	if (p.identifier == test::$IdentifierType::$i_root)
 	{
 		if (p.group.size() > 0)
 		{
@@ -55,30 +55,30 @@ void evaluate2(const test::$$Parsed &p, State &state)
 		}
 	}
 	else
-	if (p.identifier == test::$$IdentifierType::$i_statement)
+	if (p.identifier == test::$IdentifierType::$i_statement)
 	{
 		evaluate2(p.group[0], state);
 	}
 	else
-	if (p.identifier == test::$$IdentifierType::$i_mark)
+	if (p.identifier == test::$IdentifierType::$i_mark)
 	{
 		// TODO: marks
 	}
 	else
-	if (p.identifier == test::$$IdentifierType::$i_instruction)
+	if (p.identifier == test::$IdentifierType::$i_instruction)
 	{
-		if (p.group[0].identifier == test::$$IdentifierType::$i_instruction_regrm)
+		if (p.group[0].identifier == test::$IdentifierType::$i_instruction_regrm)
 		{
 			evaluate2(p.group[0], state);
 		}
 		else
-		if (p.group[0].identifier == test::$$IdentifierType::$i_instruction_jmp)
+		if (p.group[0].identifier == test::$IdentifierType::$i_instruction_jmp)
 		{
 			// TODO: marks
 		}
 	}
 	else
-	if (p.identifier == test::$$IdentifierType::$i_instruction_regrm)
+	if (p.identifier == test::$IdentifierType::$i_instruction_regrm)
 	{
 		assert(p.group[1].group.size() == 2);
 
@@ -91,10 +91,10 @@ void evaluate2(const test::$$Parsed &p, State &state)
 			int rm_displacement = 0;
 		};
 
-		const auto parse_arg = [&](const test::$$Parsed &arg) -> Argument {
+		const auto parse_arg = [&](const test::$Parsed &arg) -> Argument {
 			Argument result;
 
-			if (arg.group[0].identifier == test::$$IdentifierType::$i_kv_reg)
+			if (arg.group[0].identifier == test::$IdentifierType::$i_kv_reg)
 			{
 				// argument -> kv_reg -> literal
 				result.reg = arg.group[0].group[0].literal;
@@ -102,9 +102,9 @@ void evaluate2(const test::$$Parsed &p, State &state)
 			else
 			{
 				// argument -> addr_expr -> kv_reg
-				if (arg.group[0].group[1].identifier == test::$$IdentifierType::$i_kv_reg)
+				if (arg.group[0].group[1].identifier == test::$IdentifierType::$i_kv_reg)
 				{
-					if (auto g = arg.group[0].find(test::$$IdentifierType::$i_addr_expr_$g0))
+					if (auto g = arg.group[0].find(test::$IdentifierType::$i_addr_expr_$g0))
 					{
 						// argument -> addr_expr -> kv_reg -> literal
 						result.rm_base = arg.group[0].group[1].group[0].literal;
@@ -113,7 +113,7 @@ void evaluate2(const test::$$Parsed &p, State &state)
 						result.rm_index = g->group[1].group[0].literal;
 					}
 
-					if (auto g = arg.group[0].find(test::$$IdentifierType::$i_addr_expr_$g1))
+					if (auto g = arg.group[0].find(test::$IdentifierType::$i_addr_expr_$g1))
 					{
 						if (result.rm_base.empty())
 						{
@@ -125,7 +125,7 @@ void evaluate2(const test::$$Parsed &p, State &state)
 						result.rm_scale = atoi(g->group[1].flatten().c_str());
 					}
 
-					if (auto g = arg.group[0].find(test::$$IdentifierType::$i_addr_expr_$g2))
+					if (auto g = arg.group[0].find(test::$IdentifierType::$i_addr_expr_$g2))
 					{
 						// addr_expr_$g2 -> number
 						result.rm_displacement = atoi(g->group[1].flatten().c_str());
@@ -227,14 +227,14 @@ jmp loop
 	int a = 0;
 }
 
-int evaluate(const test::$$Parsed &p)
+int evaluate(const test::$Parsed &p)
 {
-	if (p.identifier == test::$$IdentifierType::$i_math_expr)
+	if (p.identifier == test::$IdentifierType::$i_math_expr)
 	{
 		return evaluate(p.group[0]);
 	}
 	else
-	if (p.identifier == test::$$IdentifierType::$i_math_expr_add)
+	if (p.identifier == test::$IdentifierType::$i_math_expr_add)
 	{
 		int r = evaluate(p.group[0]);
 
@@ -254,7 +254,7 @@ int evaluate(const test::$$Parsed &p)
 		return r;
 	}
 	else
-	if (p.identifier == test::$$IdentifierType::$i_math_expr_mul)
+	if (p.identifier == test::$IdentifierType::$i_math_expr_mul)
 	{
 		int r = evaluate(p.group[0]);
 
@@ -274,14 +274,14 @@ int evaluate(const test::$$Parsed &p)
 		return r;
 	}
 	else
-	if (p.identifier == test::$$IdentifierType::$i_math_expr_primitive)
+	if (p.identifier == test::$IdentifierType::$i_math_expr_primitive)
 	{
-		if (p.group[0].identifier == test::$$IdentifierType::$i_number)
+		if (p.group[0].identifier == test::$IdentifierType::$i_number)
 		{
 			return std::atoi(p.group[0].flatten().c_str());
 		}
 		else
-		if (p.group[0].identifier == test::$$IdentifierType::$i_token)
+		if (p.group[0].identifier == test::$IdentifierType::$i_token)
 		{
 			// TODO
 			return 0;
@@ -329,10 +329,12 @@ a * (b + c) + d;
 } // namespace test_
 
 extern void mylang_main(int argc, const char **argv);
+extern void mylang_byte_main(int argc, const char **argv);
 
 int main(int argc, const char **argv)
 {
 	// test_::test1();
 	// test_::test2();
-	mylang_main(argc, argv);
+	// mylang_main(argc, argv);
+	mylang_byte_main(argc, argv);
 }

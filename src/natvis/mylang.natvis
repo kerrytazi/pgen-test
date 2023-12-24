@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<AutoVisualizer xmlns="http://schemas.microsoft.com/vstudio/debugger/natvis/2010">
+	<Type Name="sptr&lt;*,*&gt;">
+		<DisplayString Condition="_block == 0">empty</DisplayString>
+		<DisplayString Condition="_block != 0">sptr [strong = { _block->strong }] { *_block->val }</DisplayString>
+		<Expand>
+			<ExpandedItem>_block</ExpandedItem>
+		</Expand>
+	</Type>
+</AutoVisualizer>

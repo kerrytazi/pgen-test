@@ -42,15 +42,28 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(PROJECT_SOURCES
 	src/main.cpp
-	src/mylang.cpp
+	src/sptr.hpp
+	src/small_vector.hpp
 
 	src/rules/test.txt
 	src/gen/test.hpp
 
+	src/mylang.cpp
 	src/rules/mylang.txt
 	src/gen/mylang.hpp
 	src/mylang/mylang_test.txt
+
+	src/mylang-byte.cpp
+	src/rules/mylang-byte.txt
+	src/gen/mylang-byte.hpp
+	src/mylang/mylang-byte_test.txt
 )
+
+IF(MSVC)
+	set(PROJECT_SOURCES ${PROJECT_SOURCES}
+		src/natvis/mylang.natvis
+	)
+ENDIF(MSVC)
 
 ADD_MSVC_PRECOMPILED_HEADER("src" "pch.hpp" "pch.cpp" PROJECT_SOURCES)
 
@@ -77,9 +90,18 @@ add_custom_command(
 
 add_custom_command(
 	OUTPUT "${CMAKE_CURRENT_SOURCE_DIR}/src/gen/mylang.hpp"
-	COMMAND "$<TARGET_FILE:pgen>" --output "${CMAKE_CURRENT_SOURCE_DIR}/src/gen/mylang.hpp" --input "${CMAKE_CURRENT_SOURCE_DIR}/src/rules/mylang.txt" --namespace mylang
+	COMMAND "$<TARGET_FILE:pgen>" --output "${CMAKE_CURRENT_SOURCE_DIR}/src/gen/mylang.hpp" --input "${CMAKE_CURRENT_SOURCE_DIR}/src/rules/mylang.txt" --namespace mylang_old
 	DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/rules/mylang.txt" "$<TARGET_FILE:pgen>"
 	MAIN_DEPENDENCY "${CMAKE_CURRENT_SOURCE_DIR}/src/rules/mylang.txt"
 	COMMENT "Generating ${CMAKE_CURRENT_SOURCE_DIR}/src/gen/mylang.hpp"
+	VERBATIM
+)
+
+add_custom_command(
+	OUTPUT "${CMAKE_CURRENT_SOURCE_DIR}/src/gen/mylang-byte.hpp"
+	COMMAND "$<TARGET_FILE:pgen>" --output "${CMAKE_CURRENT_SOURCE_DIR}/src/gen/mylang-byte.hpp" --input "${CMAKE_CURRENT_SOURCE_DIR}/src/rules/mylang-byte.txt" --namespace mylang
+	DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/rules/mylang-byte.txt" "$<TARGET_FILE:pgen>"
+	MAIN_DEPENDENCY "${CMAKE_CURRENT_SOURCE_DIR}/src/rules/mylang-byte.txt"
+	COMMENT "Generating ${CMAKE_CURRENT_SOURCE_DIR}/src/gen/mylang-byte.hpp"
 	VERBATIM
 )

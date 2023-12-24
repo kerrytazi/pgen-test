@@ -15,7 +15,7 @@
 #include "sptr.hpp"
 
 
-std::string replace_str(std::string str, const std::string& from, const std::string& to) {
+std::string replace_str_old(std::string str, const std::string& from, const std::string& to) {
 	if (from.empty())
 		return str;
 
@@ -29,7 +29,7 @@ std::string replace_str(std::string str, const std::string& from, const std::str
 	return str;
 }
 
-std::string read_file(const char *filename)
+std::string read_file_old(const char *filename)
 {
 	std::ifstream f(filename);
 	std::stringstream buffer;
@@ -38,7 +38,7 @@ std::string read_file(const char *filename)
 }
 
 
-namespace vm
+namespace vm_old
 {
 
 struct IValue;
@@ -141,7 +141,7 @@ struct DictValue : IValueTyped<EValueType::Dict>
 struct LambdaValue : IValueTyped<EValueType::Lambda>
 {
 	lambda_ptr_t lambda_ptr = nullptr;
-	const mylang::$$Parsed *expr_block = nullptr;
+	const mylang_old::$Parsed *expr_block = nullptr;
 	small_vector<std::string, args_vector_soo_size> args;
 	variables_t captures;
 };
@@ -158,12 +158,12 @@ static_assert(_EValueTypeVersion == 5, "EValueType: check shortcut");
 
 #define flow_checked(var, expr) \
 		auto _##var##_pair = expr; \
-		if (_##var##_pair.second != vm::EFlowChange::None) \
+		if (_##var##_pair.second != vm_old::EFlowChange::None) \
 			return _##var##_pair; \
 		auto var = _##var##_pair.first
 
 #define flow_unchanged(expr) \
-	vm::fivalue_t{ expr, vm::EFlowChange::None }
+	vm_old::fivalue_t{ expr, vm_old::EFlowChange::None }
 
 template <typename TFunc>
 struct ExitScope
@@ -632,21 +632,21 @@ ivalue_t &variables_t::get_or_declare_variable(State &state, const std::string &
 }
 
 [[nodiscard]]
-fivalue_t evaluate_expr_block(const mylang::$$Parsed &expr_block, State &state, bool new_scope);
+fivalue_t evaluate_expr_block(const mylang_old::$Parsed &expr_block, State &state, bool new_scope);
 [[nodiscard]]
-ivalue_t &evaluate_token_path(const mylang::$$Parsed &statement, State &state, bool assign);
+ivalue_t &evaluate_token_path(const mylang_old::$Parsed &statement, State &state, bool assign);
 [[nodiscard]]
-fivalue_t evaluate_statement(const mylang::$$Parsed &statement, State &state);
+fivalue_t evaluate_statement(const mylang_old::$Parsed &statement, State &state);
 
-void fix_tree(mylang::$$Parsed &par)
+void fix_tree(mylang_old::$Parsed &par)
 {
-	if (par.identifier == mylang::$$IdentifierType::$i_str)
+	if (par.identifier == mylang_old::$IdentifierType::$i_str)
 	{
 		auto &str = par;
 		auto &str_$g0 = str.group[1];
 
-		str_$g0.literal = replace_str(str_$g0.flatten(), "\\\"", "\"");
-		str_$g0.type = mylang::$$ParsedType::Literal;
+		str_$g0.literal = replace_str_old(str_$g0.flatten(), "\\\"", "\"");
+		str_$g0.type = mylang_old::$ParsedType::Literal;
 		str_$g0.group.clear();
 	}
 	else
@@ -656,15 +656,15 @@ void fix_tree(mylang::$$Parsed &par)
 	}
 }
 
-void optimize_tree(mylang::$$Parsed &par)
+void optimize_tree(mylang_old::$Parsed &par)
 {
-	if (par.identifier == mylang::$$IdentifierType::$i_expr)
+	if (par.identifier == mylang_old::$IdentifierType::$i_expr)
 	{
 		auto tmp = std::move(par.group[0]);
 		par = std::move(tmp);
 	}
 
-	if (par.identifier == mylang::$$IdentifierType::$i_expr_bool_compare)
+	if (par.identifier == mylang_old::$IdentifierType::$i_expr_bool_compare)
 	{
 		if (par.group.size() == 1)
 		{
@@ -673,7 +673,7 @@ void optimize_tree(mylang::$$Parsed &par)
 		}
 	}
 
-	if (par.identifier == mylang::$$IdentifierType::$i_expr_add)
+	if (par.identifier == mylang_old::$IdentifierType::$i_expr_add)
 	{
 		if (par.group.size() == 1)
 		{
@@ -682,7 +682,7 @@ void optimize_tree(mylang::$$Parsed &par)
 		}
 	}
 
-	if (par.identifier == mylang::$$IdentifierType::$i_expr_mul)
+	if (par.identifier == mylang_old::$IdentifierType::$i_expr_mul)
 	{
 		if (par.group.size() == 1)
 		{
@@ -691,7 +691,7 @@ void optimize_tree(mylang::$$Parsed &par)
 		}
 	}
 
-	if (par.identifier == mylang::$$IdentifierType::$i_expr_primitive)
+	if (par.identifier == mylang_old::$IdentifierType::$i_expr_primitive)
 	{
 		if (par.group.size() == 1)
 		{
@@ -700,25 +700,25 @@ void optimize_tree(mylang::$$Parsed &par)
 		}
 	}
 
-	if (par.identifier == mylang::$$IdentifierType::$i_expr_group)
+	if (par.identifier == mylang_old::$IdentifierType::$i_expr_group)
 	{
 		auto tmp = std::move(par.group[2]);
 		par = std::move(tmp);
 	}
 	
-	if (par.identifier == mylang::$$IdentifierType::$i_token)
+	if (par.identifier == mylang_old::$IdentifierType::$i_token)
 	{
 		auto &token = par;
 		token.literal = token.flatten();
-		token.type = mylang::$$ParsedType::Literal;
+		token.type = mylang_old::$ParsedType::Literal;
 		token.group.clear();
 	}
 
-	if (par.identifier == mylang::$$IdentifierType::$i_number)
+	if (par.identifier == mylang_old::$IdentifierType::$i_number)
 	{
 		auto &number = par;
 		number.literal = number.flatten();
-		number.type = mylang::$$ParsedType::Literal;
+		number.type = mylang_old::$ParsedType::Literal;
 		number.group.clear();
 	}
 
@@ -726,9 +726,9 @@ void optimize_tree(mylang::$$Parsed &par)
 		optimize_tree(v);
 }
 
-void collect_captures(const mylang::$$Parsed &par, State &state, variables_t &captures)
+void collect_captures(const mylang_old::$Parsed &par, State &state, variables_t &captures)
 {
-	if (par.identifier == mylang::$$IdentifierType::$i_token_path)
+	if (par.identifier == mylang_old::$IdentifierType::$i_token_path)
 	{
 		const auto &token_path = par;
 		const auto &token = token_path.group[0];
@@ -789,19 +789,19 @@ fivalue_t evaluate_call(ivalue_t func, const args_vector &args, State &state)
 }
 
 [[nodiscard]]
-fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
+fivalue_t evaluate_expr(const mylang_old::$Parsed &par, State &state)
 {
 	if (state.debug)
-		std::cout << "[debug] " << "evaluate_expr: par = " << replace_str(par.flatten(), "\n", "") << "\n";
+		std::cout << "[debug] " << "evaluate_expr: par = " << replace_str_old(par.flatten(), "\n", "") << "\n";
 
-	if (par.identifier == mylang::$$IdentifierType::$i_expr)
+	if (par.identifier == mylang_old::$IdentifierType::$i_expr)
 	{
 		const auto &expr = par;
 		const auto &expr_bool_compare = expr.group[0];
 		return evaluate_expr(expr_bool_compare, state);
 	}
 	else
-	if (par.identifier == mylang::$$IdentifierType::$i_expr_bool_compare)
+	if (par.identifier == mylang_old::$IdentifierType::$i_expr_bool_compare)
 	{
 		const auto &expr_bool_compare = par;
 		const auto &expr_add_left = expr_bool_compare.group[0];
@@ -959,7 +959,7 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 		return flow_unchanged(left);
 	}
 	else
-	if (par.identifier == mylang::$$IdentifierType::$i_expr_add)
+	if (par.identifier == mylang_old::$IdentifierType::$i_expr_add)
 	{
 		const auto &expr_add = par;
 		const auto &expr_mul = expr_add.group[0];
@@ -1027,7 +1027,7 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 		return flow_unchanged(left);
 	}
 	else
-	if (par.identifier == mylang::$$IdentifierType::$i_expr_mul)
+	if (par.identifier == mylang_old::$IdentifierType::$i_expr_mul)
 	{
 		const auto &expr_mul = par;
 		const auto &expr_primitive = expr_mul.group[0];
@@ -1082,71 +1082,71 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 		return flow_unchanged(left);
 	}
 	else
-	if (par.identifier == mylang::$$IdentifierType::$i_expr_primitive)
+	if (par.identifier == mylang_old::$IdentifierType::$i_expr_primitive)
 	{
 		const auto &expr_primitive = par;
 		
-		if (expr_primitive.group[0].identifier == mylang::$$IdentifierType::$i_expr_if)
+		if (expr_primitive.group[0].identifier == mylang_old::$IdentifierType::$i_expr_if)
 		{
 			const auto &expr_if = expr_primitive.group[0];
 			return evaluate_expr(expr_if, state);
 		}
 		else
-		if (expr_primitive.group[0].identifier == mylang::$$IdentifierType::$i_expr_while)
+		if (expr_primitive.group[0].identifier == mylang_old::$IdentifierType::$i_expr_while)
 		{
 			const auto &expr_while = expr_primitive.group[0];
 			return evaluate_expr(expr_while, state);
 		}
 		else
-		if (expr_primitive.group[0].identifier == mylang::$$IdentifierType::$i_expr_call)
+		if (expr_primitive.group[0].identifier == mylang_old::$IdentifierType::$i_expr_call)
 		{
 			const auto &expr_call = expr_primitive.group[0];
 			return evaluate_expr(expr_call, state);
 		}
 		else
-		if (expr_primitive.group[0].identifier == mylang::$$IdentifierType::$i_expr_function)
+		if (expr_primitive.group[0].identifier == mylang_old::$IdentifierType::$i_expr_function)
 		{
 			const auto &expr_function = expr_primitive.group[0];
 			return evaluate_expr(expr_function, state);
 		}
 		else
-		if (expr_primitive.group[0].identifier == mylang::$$IdentifierType::$i_kv_boolean)
+		if (expr_primitive.group[0].identifier == mylang_old::$IdentifierType::$i_kv_boolean)
 		{
 			const auto &kv_boolean = expr_primitive.group[0];
 			return evaluate_expr(kv_boolean, state);
 		}
 		else
-		if (expr_primitive.group[0].identifier == mylang::$$IdentifierType::$i_str)
+		if (expr_primitive.group[0].identifier == mylang_old::$IdentifierType::$i_str)
 		{
 			const auto &str = expr_primitive.group[0];
 			return evaluate_expr(str, state);
 		}
 		else
-		if (expr_primitive.group[0].identifier == mylang::$$IdentifierType::$i_number)
+		if (expr_primitive.group[0].identifier == mylang_old::$IdentifierType::$i_number)
 		{
 			const auto &number = expr_primitive.group[0];
 			return evaluate_expr(number, state);
 		}
 		else
-		if (expr_primitive.group[0].identifier == mylang::$$IdentifierType::$i_expr_assign)
+		if (expr_primitive.group[0].identifier == mylang_old::$IdentifierType::$i_expr_assign)
 		{
 			const auto &expr_assign = expr_primitive.group[0];
 			return evaluate_expr(expr_assign, state);
 		}
 		else
-		if (expr_primitive.group[0].identifier == mylang::$$IdentifierType::$i_token_path)
+		if (expr_primitive.group[0].identifier == mylang_old::$IdentifierType::$i_token_path)
 		{
 			const auto &token_path = expr_primitive.group[0];
 			return evaluate_expr(token_path, state);
 		}
 		else
-		if (expr_primitive.group[0].identifier == mylang::$$IdentifierType::$i_expr_group)
+		if (expr_primitive.group[0].identifier == mylang_old::$IdentifierType::$i_expr_group)
 		{
 			const auto &expr_group = expr_primitive.group[0];
 			return evaluate_expr(expr_group, state);
 		}
 		else
-		if (expr_primitive.group[0].identifier == mylang::$$IdentifierType::$i_expr_block)
+		if (expr_primitive.group[0].identifier == mylang_old::$IdentifierType::$i_expr_block)
 		{
 			const auto &expr_block = expr_primitive.group[0];
 			return evaluate_expr(expr_block, state);
@@ -1157,15 +1157,15 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 		}
 	}
 	else
-	if (par.identifier == mylang::$$IdentifierType::$i_kv_boolean)
+	if (par.identifier == mylang_old::$IdentifierType::$i_kv_boolean)
 	{
 		const auto &kv_boolean = par;
-		if (kv_boolean.group[0].identifier == mylang::$$IdentifierType::$i_kv_false)
+		if (kv_boolean.group[0].identifier == mylang_old::$IdentifierType::$i_kv_false)
 		{
 			return flow_unchanged(state.create_bool(false));
 		}
 		else
-		if (kv_boolean.group[0].identifier == mylang::$$IdentifierType::$i_kv_true)
+		if (kv_boolean.group[0].identifier == mylang_old::$IdentifierType::$i_kv_true)
 		{
 			return flow_unchanged(state.create_bool(true));
 		}
@@ -1175,12 +1175,12 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 		}
 	}
 	else
-	if (par.identifier == mylang::$$IdentifierType::$i_str)
+	if (par.identifier == mylang_old::$IdentifierType::$i_str)
 	{
 		const auto &str = par;
 		const auto &str_$g0 = str.group[1];
 
-		struct StrParsedCustomData : mylang::$$ParsedCustomData
+		struct StrParsedCustomData : mylang_old::$ParsedCustomData
 		{
 			std::string val;
 		};
@@ -1195,11 +1195,11 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 		return flow_unchanged(state.create_str(static_cast<StrParsedCustomData *>(str_$g0.custom_data.get())->val));
 	}
 	else
-	if (par.identifier == mylang::$$IdentifierType::$i_number)
+	if (par.identifier == mylang_old::$IdentifierType::$i_number)
 	{
 		const auto &number = par;
 
-		struct NumberParsedCustomData : mylang::$$ParsedCustomData
+		struct NumberParsedCustomData : mylang_old::$ParsedCustomData
 		{
 			int64_t val = 0;
 		};
@@ -1214,40 +1214,40 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 		return flow_unchanged(state.create_i64(static_cast<NumberParsedCustomData *>(number.custom_data.get())->val));
 	}
 	else
-	if (par.identifier == mylang::$$IdentifierType::$i_token_path)
+	if (par.identifier == mylang_old::$IdentifierType::$i_token_path)
 	{
 		const auto &token_path = par;
 		return flow_unchanged(evaluate_token_path(token_path, state, false));
 	}
 	else
-	if (par.identifier == mylang::$$IdentifierType::$i_expr_group)
+	if (par.identifier == mylang_old::$IdentifierType::$i_expr_group)
 	{
 		const auto &expr_group = par;
 		const auto &expr = expr_group.group[2];
 		return evaluate_expr(expr, state);
 	}
 	else
-	if (par.identifier == mylang::$$IdentifierType::$i_expr_call)
+	if (par.identifier == mylang_old::$IdentifierType::$i_expr_call)
 	{
 		const auto &expr_call = par;
 		const auto &expr_call_$g0 = expr_call.group[0];
 
 		ivalue_t func;
 
-		if (expr_call_$g0.group[0].identifier == mylang::$$IdentifierType::$i_token_path)
+		if (expr_call_$g0.group[0].identifier == mylang_old::$IdentifierType::$i_token_path)
 		{
 			const auto &token_path = expr_call_$g0.group[0];
 			func = evaluate_token_path(token_path, state, false);
 		}
 		else
-		if (expr_call_$g0.group[0].identifier == mylang::$$IdentifierType::$i_expr_group)
+		if (expr_call_$g0.group[0].identifier == mylang_old::$IdentifierType::$i_expr_group)
 		{
 			const auto &expr_group = expr_call_$g0.group[0];
 			flow_checked(cheked, evaluate_expr(expr_group, state));
 			func = cheked;
 		}
 		else
-		if (expr_call_$g0.group[0].identifier == mylang::$$IdentifierType::$i_expr_function)
+		if (expr_call_$g0.group[0].identifier == mylang_old::$IdentifierType::$i_expr_function)
 		{
 			const auto &expr_function = expr_call_$g0.group[0];
 			flow_checked(cheked, evaluate_expr(expr_function, state));
@@ -1260,7 +1260,7 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 
 		args_vector args;
 
-		if (const auto *expr_call_$g3 = expr_call.find(mylang::$$IdentifierType::$i_expr_call_$g3))
+		if (const auto *expr_call_$g3 = expr_call.find(mylang_old::$IdentifierType::$i_expr_call_$g3))
 		{
 			const auto &expr = expr_call_$g3->group[0];
 			flow_checked(cheked, evaluate_expr(expr, state));
@@ -1268,7 +1268,7 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 
 			for (size_t i = 1; i < expr_call_$g3->group.size(); ++i)
 			{
-				if (expr_call_$g3->group[i].identifier == mylang::$$IdentifierType::$i_expr_call_$g3_$g1)
+				if (expr_call_$g3->group[i].identifier == mylang_old::$IdentifierType::$i_expr_call_$g3_$g1)
 				{
 					const auto &expr_call_$g3_$g1 = expr_call_$g3->group[i];
 
@@ -1282,7 +1282,7 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 		return evaluate_call(func, args, state);
 	}
 	else
-	if (par.identifier == mylang::$$IdentifierType::$i_expr_function)
+	if (par.identifier == mylang_old::$IdentifierType::$i_expr_function)
 	{
 		const auto &expr_function = par;
 
@@ -1331,14 +1331,14 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 			return result;
 		});
 
-		if (const auto *expr_function_$g1 = expr_function.find(mylang::$$IdentifierType::$i_expr_function_$g1))
+		if (const auto *expr_function_$g1 = expr_function.find(mylang_old::$IdentifierType::$i_expr_function_$g1))
 		{
 			const auto &token = expr_function_$g1->group[0];
 			l->args.push_back(token.flatten());
 
 			for (size_t i = 1; i < expr_function_$g1->group.size(); ++i)
 			{
-				if (expr_function_$g1->group[i].identifier == mylang::$$IdentifierType::$i_expr_function_$g1_$g1)
+				if (expr_function_$g1->group[i].identifier == mylang_old::$IdentifierType::$i_expr_function_$g1_$g1)
 				{
 					const auto &expr_function_$g1_$g1 = expr_function_$g1->group[i];
 					const auto &token = expr_function_$g1_$g1.group[2];
@@ -1347,7 +1347,7 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 			}
 		}
 
-		l->expr_block = expr_function.find(mylang::$$IdentifierType::$i_expr_block);
+		l->expr_block = expr_function.find(mylang_old::$IdentifierType::$i_expr_block);
 		assert(l->expr_block);
 
 		collect_captures(*l->expr_block, state, l->captures);
@@ -1355,7 +1355,7 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 		return flow_unchanged(l);
 	}
 	else
-	if (par.identifier == mylang::$$IdentifierType::$i_expr_if)
+	if (par.identifier == mylang_old::$IdentifierType::$i_expr_if)
 	{
 		const auto &expr_if = par;
 		const auto &expr = expr_if.group[4];
@@ -1374,7 +1374,7 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 		}
 		else
 		{
-			if (const auto *expr_if_$g4 = expr_if.find(mylang::$$IdentifierType::$i_expr_if_$g4))
+			if (const auto *expr_if_$g4 = expr_if.find(mylang_old::$IdentifierType::$i_expr_if_$g4))
 			{
 				const auto &expr_block = expr_if_$g4->group[3];
 				return evaluate_expr(expr_block, state);
@@ -1386,7 +1386,7 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 		}
 	}
 	else
-	if (par.identifier == mylang::$$IdentifierType::$i_expr_while)
+	if (par.identifier == mylang_old::$IdentifierType::$i_expr_while)
 	{
 		const auto &expr_while = par;
 		const auto &expr = expr_while.group[4];
@@ -1473,7 +1473,7 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 			}
 		}
 
-		if (const auto *expr_while_$g4 = expr_while.find(mylang::$$IdentifierType::$i_expr_while_$g4))
+		if (const auto *expr_while_$g4 = expr_while.find(mylang_old::$IdentifierType::$i_expr_while_$g4))
 		{
 			const auto &expr_block = expr_while_$g4->group[3];
 			return evaluate_expr(expr_block, state);
@@ -1484,13 +1484,13 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 		}
 	}
 	else
-	if (par.identifier == mylang::$$IdentifierType::$i_expr_block)
+	if (par.identifier == mylang_old::$IdentifierType::$i_expr_block)
 	{
 		const auto &expr_block = par;
 		return evaluate_expr_block(expr_block, state, true);
 	}
 	else
-	if (par.identifier == mylang::$$IdentifierType::$i_expr_assign)
+	if (par.identifier == mylang_old::$IdentifierType::$i_expr_assign)
 	{
 		const auto &expr_assign = par;
 		const auto &token_path = expr_assign.group[0];
@@ -1511,12 +1511,12 @@ fivalue_t evaluate_expr(const mylang::$$Parsed &par, State &state)
 }
 
 [[nodiscard]]
-fivalue_t evaluate_expr_block(const mylang::$$Parsed &expr_block, State &state, bool new_scope)
+fivalue_t evaluate_expr_block(const mylang_old::$Parsed &expr_block, State &state, bool new_scope)
 {
 	if (state.debug)
-		std::cout << "[debug] " << "evaluate_expr_block, expr_bloc = " << replace_str(expr_block.flatten(), "\n", "") << "\n";
+		std::cout << "[debug] " << "evaluate_expr_block, expr_bloc = " << replace_str_old(expr_block.flatten(), "\n", "") << "\n";
 
-	assert(expr_block.identifier == mylang::$$IdentifierType::$i_expr_block);
+	assert(expr_block.identifier == mylang_old::$IdentifierType::$i_expr_block);
 
 	[[maybe_unused]]
 	size_t scope_layer = 0;
@@ -1539,7 +1539,7 @@ fivalue_t evaluate_expr_block(const mylang::$$Parsed &expr_block, State &state, 
 
 	for (size_t i = 1; i < expr_block.group.size() - 1; ++i)
 	{
-		if (expr_block.group[i].identifier == mylang::$$IdentifierType::$i_expr_block_$g1)
+		if (expr_block.group[i].identifier == mylang_old::$IdentifierType::$i_expr_block_$g1)
 		{
 			const auto &expr_block_g1 = expr_block.group[i];
 			const auto &statement = expr_block_g1.group[0];
@@ -1548,7 +1548,7 @@ fivalue_t evaluate_expr_block(const mylang::$$Parsed &expr_block, State &state, 
 		}
 	}
 
-	if (const auto* expr_block_$g2 = expr_block.find(mylang::$$IdentifierType::$i_expr_block_$g2))
+	if (const auto* expr_block_$g2 = expr_block.find(mylang_old::$IdentifierType::$i_expr_block_$g2))
 	{
 		const auto &expr = expr_block_$g2->group[0];
 		return evaluate_expr(expr, state);
@@ -1558,14 +1558,14 @@ fivalue_t evaluate_expr_block(const mylang::$$Parsed &expr_block, State &state, 
 }
 
 [[nodiscard]]
-ivalue_t &evaluate_token_path(const mylang::$$Parsed &token_path, State &state, bool assign)
+ivalue_t &evaluate_token_path(const mylang_old::$Parsed &token_path, State &state, bool assign)
 {
 	if (state.debug)
-		std::cout << "[debug] " << "evaluate_token_path: token_path = " << replace_str(token_path.flatten(), "\n", "") <<  "\n";
+		std::cout << "[debug] " << "evaluate_token_path: token_path = " << replace_str_old(token_path.flatten(), "\n", "") <<  "\n";
 
-	assert(token_path.identifier == mylang::$$IdentifierType::$i_token_path);
+	assert(token_path.identifier == mylang_old::$IdentifierType::$i_token_path);
 
-	struct TokenPathParsedCustomData : mylang::$$ParsedCustomData
+	struct TokenPathParsedCustomData : mylang_old::$ParsedCustomData
 	{
 		size_t function_index = 0;
 		size_t block_index = 0;
@@ -1694,14 +1694,14 @@ ivalue_t &evaluate_token_path(const mylang::$$Parsed &token_path, State &state, 
 }
 
 [[nodiscard]]
-fivalue_t evaluate_statement(const mylang::$$Parsed &statement, State &state)
+fivalue_t evaluate_statement(const mylang_old::$Parsed &statement, State &state)
 {
 	if (state.debug)
-		std::cout << "[debug] " << "evaluate_statement: statement = " << replace_str(statement.flatten(), "\n", "") <<  "\n";
+		std::cout << "[debug] " << "evaluate_statement: statement = " << replace_str_old(statement.flatten(), "\n", "") <<  "\n";
 
-	assert(statement.identifier == mylang::$$IdentifierType::$i_statement);
+	assert(statement.identifier == mylang_old::$IdentifierType::$i_statement);
 
-	if (statement.group[0].identifier == mylang::$$IdentifierType::$i_statement_if)
+	if (statement.group[0].identifier == mylang_old::$IdentifierType::$i_statement_if)
 	{
 		const auto &statement_if = statement.group[0];
 		const auto &expr_if = statement_if.group[0];
@@ -1710,7 +1710,7 @@ fivalue_t evaluate_statement(const mylang::$$Parsed &statement, State &state)
 		return flow_unchanged({});
 	}
 	else
-	if (statement.group[0].identifier == mylang::$$IdentifierType::$i_statement_while)
+	if (statement.group[0].identifier == mylang_old::$IdentifierType::$i_statement_while)
 	{
 		const auto &statement_while = statement.group[0];
 		const auto &expr_while = statement_while.group[0];
@@ -1719,7 +1719,7 @@ fivalue_t evaluate_statement(const mylang::$$Parsed &statement, State &state)
 		return flow_unchanged({});
 	}
 	else
-	if (statement.group[0].identifier == mylang::$$IdentifierType::$i_statement_block)
+	if (statement.group[0].identifier == mylang_old::$IdentifierType::$i_statement_block)
 	{
 		const auto &statement_block = statement.group[0];
 		const auto &expr_block = statement_block.group[0];
@@ -1728,7 +1728,7 @@ fivalue_t evaluate_statement(const mylang::$$Parsed &statement, State &state)
 		return flow_unchanged({});
 	}
 	else
-	if (statement.group[0].identifier == mylang::$$IdentifierType::$i_statement_let)
+	if (statement.group[0].identifier == mylang_old::$IdentifierType::$i_statement_let)
 	{
 		const auto &statement_assign = statement.group[0];
 		const auto &statement_assign_$g1 = statement_assign.group[2];
@@ -1754,11 +1754,11 @@ fivalue_t evaluate_statement(const mylang::$$Parsed &statement, State &state)
 		return flow_unchanged({});
 	}
 	else
-	if (statement.group[0].identifier == mylang::$$IdentifierType::$i_statement_return)
+	if (statement.group[0].identifier == mylang_old::$IdentifierType::$i_statement_return)
 	{
 		const auto &statement_return = statement.group[0];
 
-		if (auto statement_return_$g0 = statement_return.find(mylang::$$IdentifierType::$i_statement_return_$g0))
+		if (auto statement_return_$g0 = statement_return.find(mylang_old::$IdentifierType::$i_statement_return_$g0))
 		{
 			const auto &expr = statement_return_$g0->group[1];
 			flow_checked(checked, evaluate_expr(expr, state));
@@ -1770,7 +1770,7 @@ fivalue_t evaluate_statement(const mylang::$$Parsed &statement, State &state)
 		}
 	}
 	else
-	if (statement.group[0].identifier == mylang::$$IdentifierType::$i_statement_continue)
+	if (statement.group[0].identifier == mylang_old::$IdentifierType::$i_statement_continue)
 	{
 		const auto &statement_continue = statement.group[0];
 		(void)statement_continue;
@@ -1781,14 +1781,14 @@ fivalue_t evaluate_statement(const mylang::$$Parsed &statement, State &state)
 		return fivalue_t{ {}, EFlowChange::Continue };
 	}
 	else
-	if (statement.group[0].identifier == mylang::$$IdentifierType::$i_statement_break)
+	if (statement.group[0].identifier == mylang_old::$IdentifierType::$i_statement_break)
 	{
 		const auto &statement_break = statement.group[0];
 
 		if (!state.allow_break)
 			throw 1;
 
-		if (auto statement_break_$g0 = statement_break.find(mylang::$$IdentifierType::$i_statement_break_$g0))
+		if (auto statement_break_$g0 = statement_break.find(mylang_old::$IdentifierType::$i_statement_break_$g0))
 		{
 			const auto &expr = statement_break_$g0->group[1];
 			flow_checked(checked, evaluate_expr(expr, state));
@@ -1800,7 +1800,7 @@ fivalue_t evaluate_statement(const mylang::$$Parsed &statement, State &state)
 		}
 	}
 	else
-	if (statement.group[0].identifier == mylang::$$IdentifierType::$i_statement_expr)
+	if (statement.group[0].identifier == mylang_old::$IdentifierType::$i_statement_expr)
 	{
 		const auto &statement_expr = statement.group[0];
 		const auto &expr = statement_expr.group[0];
@@ -1964,13 +1964,13 @@ State prepare_state()
 	return state;
 }
 
-void run(State &state, const mylang::$$Parsed &root)
+void run(State &state, const mylang_old::$Parsed &root)
 {
-	assert(root.identifier == mylang::$$IdentifierType::$i_root);
+	assert(root.identifier == mylang_old::$IdentifierType::$i_root);
 
 	for (size_t i = 0; i < root.group.size(); ++i)
 	{
-		if (root.group[i].identifier == mylang::$$IdentifierType::$i_root_$g1)
+		if (root.group[i].identifier == mylang_old::$IdentifierType::$i_root_$g1)
 		{
 			const auto &root_$g1 = root.group[i];
 			const auto &statement = root_$g1.group[0];
@@ -1987,141 +1987,19 @@ void run(State &state, const mylang::$$Parsed &root)
 }
 
 
-} // namespace vm
+} // namespace vm_old
 
-#define OLC_PGE_APPLICATION
-#include "../libs/olcPixelGameEngine/olcPixelGameEngine.h"
 
-class Example : public olc::PixelGameEngine
+void mylang_old_main(int argc, const char **argv)
 {
-public:
-	Example()
-	{
-		sAppName = "Example";
-	}
-
-	mylang::$$Parsed root;
-	vm::State state;
-
-public:
-	bool OnUserCreate() override
-	{
-		std::string text = read_file("../src/mylang/mylang_test.txt");
-
-		const char *s = text.data();
-		const char *e = s + text.size();
-
-		root = mylang::$parse_root(s, e).value();
-		vm::fix_tree(root);
-		vm::optimize_tree(root);
-		state = vm::prepare_state();
-
-		state.create_empty_static({ "Example", "this" }) = state.create_i64((int64_t)this);
-
-		state.create_empty_static({ "Example", "ScreenWidth" }) = state.create_lambda([](const vm::LambdaValue *, const vm::args_vector &args, vm::State &state) -> vm::fivalue_t {
-			static std::initializer_list<vm::var_block_cache> var_cache_this{ {}, {} };
-			Example *_this = (Example *)state.find_variable({ "Example", "this" }, var_cache_this).casted<vm::I64Value>()->val;
-
-			return flow_unchanged(state.create_i64(_this->ScreenWidth()));
-		});
-
-		state.create_empty_static({ "Example", "ScreenHeight" }) = state.create_lambda([](const vm::LambdaValue *, const vm::args_vector &args, vm::State &state) -> vm::fivalue_t {
-			static std::initializer_list<vm::var_block_cache> var_cache_this{ {}, {} };
-			Example *_this = (Example *)state.find_variable({ "Example", "this" }, var_cache_this).casted<vm::I64Value>()->val;
-
-			return flow_unchanged(state.create_i64(_this->ScreenHeight()));
-		});
-
-		state.create_empty_static({ "Example", "rand" }) = state.create_lambda([](const vm::LambdaValue *, const vm::args_vector &args, vm::State &state) -> vm::fivalue_t {
-			return flow_unchanged(state.create_i64(rand()));
-		});
-
-		state.create_empty_static({ "Example", "Draw" }) = state.create_lambda([](const vm::LambdaValue *, const vm::args_vector &args, vm::State &state) -> vm::fivalue_t {
-			static std::initializer_list<vm::var_block_cache> var_cache_this{ {}, {} };
-			Example *_this = (Example *)state.find_variable({ "Example", "this" }, var_cache_this).casted<vm::I64Value>()->val;
-
-			int32_t x = (int32_t)args[0].casted<vm::I64Value>()->val;
-			int32_t y = (int32_t)args[1].casted<vm::I64Value>()->val;
-
-			auto pixel_d = args[2].casted<vm::DictValue>();
-
-			static vm::var_id_cache var_cache_r;
-			static vm::var_id_cache var_cache_g;
-			static vm::var_id_cache var_cache_b;
-			static vm::var_id_cache var_cache_a;
-
-			auto p = olc::Pixel(
-				(uint8_t)pixel_d->fields.find_variable(state, "r", var_cache_r).casted<vm::I64Value>()->val,
-				(uint8_t)pixel_d->fields.find_variable(state, "g", var_cache_g).casted<vm::I64Value>()->val,
-				(uint8_t)pixel_d->fields.find_variable(state, "b", var_cache_b).casted<vm::I64Value>()->val,
-				(uint8_t)pixel_d->fields.find_variable(state, "a", var_cache_a).casted<vm::I64Value>()->val
-			);
-
-			return flow_unchanged(state.create_bool(_this->Draw(x, y, p)));
-		});
-
-		state.create_empty_static({ "Example", "olc", "Pixel" }) = state.create_lambda([](const vm::LambdaValue *, const vm::args_vector &args, vm::State &state) -> vm::fivalue_t {
-			auto d = state.create_dict();
-
-			static vm::var_id_cache var_cache_r;
-			static vm::var_id_cache var_cache_g;
-			static vm::var_id_cache var_cache_b;
-			static vm::var_id_cache var_cache_a;
-
-			d->fields.get_or_declare_variable(state, "r", var_cache_r) = state.create_i64((uint8_t)(args.size() >= 3 ? args[0].casted<vm::I64Value>()->val : 0));
-			d->fields.get_or_declare_variable(state, "g", var_cache_g) = state.create_i64((uint8_t)(args.size() >= 3 ? args[1].casted<vm::I64Value>()->val : 0));
-			d->fields.get_or_declare_variable(state, "b", var_cache_b) = state.create_i64((uint8_t)(args.size() >= 3 ? args[2].casted<vm::I64Value>()->val : 0));
-			d->fields.get_or_declare_variable(state, "a", var_cache_a) = state.create_i64((uint8_t)(args.size() >= 4 ? args[3].casted<vm::I64Value>()->val : olc::nDefaultAlpha));
-
-			return flow_unchanged(d);
-		});
-
-		vm::run(state, root);
-
-		return true;
-	}
-
-	bool OnUserUpdate(float fElapsedTime) override
-	{
-		Clear(olc::RED);
-
-		if (auto on_user_update = state.find_variable("on_user_update"))
-		{
-			if (on_user_update->type != vm::EValueType::Lambda)
-				throw 1;
-
-			auto result = vm::evaluate_call(on_user_update, {}, state);
-			(void)result;
-		}
-
-		return true;
-	}
-};
-
-
-int olc_main()
-{
-	Example demo;
-	if (demo.Construct(256, 240, 4, 4))
-		demo.Start();
-
-	return 0;
-}
-
-
-void mylang_main(int argc, const char **argv)
-{
-
-	olc_main();
-
-	std::string text = read_file("../src/mylang/mylang_test.txt");
+	std::string text = read_file_old("../src/mylang_old/mylang_old_test.txt");
 
 	const char *s = text.data();
 	const char *e = s + text.size();
 
-	auto root = mylang::$parse_root(s, e).value();
+	auto root = mylang_old::$parse_root(s, e).value();
 
-	// std::cout << mylang::helpers::generate_graphviz(root);
+	// std::cout << mylang_old::helpers::generate_graphviz(root);
 
 	int b = 0;
 
@@ -2139,27 +2017,27 @@ void mylang_main(int argc, const char **argv)
 		colors["kv_if"] = "\033[95m";
 		colors["kv_while"] = "\033[95m";
 		colors["kv_else"] = "\033[95m";
-		std::cout << "--- code begin ---\n" << mylang::helpers::ansii_colored(root, colors, "\033[0m") << "--- code end ---\n";
+		std::cout << "--- code begin ---\n" << mylang_old::helpers::ansii_colored(root, colors, "\033[0m") << "--- code end ---\n";
 	}
 
 	std::cout << "--- program begin ---\n";
 
 	{
-		vm::fix_tree(root);
-		vm::optimize_tree(root);
-		auto state = vm::prepare_state();
-		vm::run(state, root);
+		vm_old::fix_tree(root);
+		vm_old::optimize_tree(root);
+		auto state = vm_old::prepare_state();
+		vm_old::run(state, root);
 
 		{
 			auto &vars = state.function_scopes[0].blocks[0]->variables;
 
 			if (auto on_user_update = vars.find_variable(state, "on_user_update"))
 			{
-				if (on_user_update->type != vm::EValueType::Lambda)
+				if (on_user_update->type != vm_old::EValueType::Lambda)
 					throw 1;
 
-				// auto result = vm::evaluate_call(on_user_update, {}, state);
-				// (void)result;
+				auto result = vm_old::evaluate_call(on_user_update, {}, state);
+				(void)result;
 			}
 		}
 	}
