@@ -59,7 +59,7 @@ token: (letter | "_") (letter | digit_decimal | "_")*
 token_path: token ((ws0 "." ws0 token)*)
 
 
-expr_function: "|" ws0 (token ws0 ("," ws0 token ws0)*)? "|" ws0 expr_block
+expr_function: "|" ws0 ((token ws0 (("," ws0 token ws0)*))?) "|" ws0 expr_block
 
 expr_block: "{" ws0 ((statement ws0)*) ((expr ws0)?) "}"
 

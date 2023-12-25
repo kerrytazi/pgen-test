@@ -15,6 +15,7 @@
 #include <ranges>
 #include <functional>
 #include <variant>
+#include <algorithm>
 
 #include <new>
 #include <utility>

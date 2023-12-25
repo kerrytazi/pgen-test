@@ -1,8 +1,16 @@
 
 
+let func1 = |a, b| {
+	a + b
+};
+
+let func2 = |a, b| {
+	a + b
+};
+
 let a = 33;
 let b = 44;
 let c = a + b;
-std.print(c);
-std.print(a + c);
+
+std.print(func1(b, c) + func2(a, c));
 
