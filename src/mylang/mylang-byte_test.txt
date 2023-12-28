@@ -5,6 +5,8 @@ if (2 > 3) {
 	std.print(3);
 }
 
+let ifr = if (2 > 3) { 2 } else { 3 };
+
 
 let func1 = |a, b| {
 	return a + b;

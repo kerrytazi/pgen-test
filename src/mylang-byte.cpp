@@ -2104,7 +2104,7 @@ struct Compiler
 					{
 						v_result = add_local_variable();
 
-						add_instruction(Instruction_MOV {
+						add_instruction(if_pos_before, Instruction_MOV {
 							.dest = v_result,
 							.src = v_if_block,
 						});
@@ -2150,6 +2150,7 @@ struct Compiler
 						const auto &expr_block_else_g = expr_block_else_maybe.get(0, mylang::$IdentifierType::$i_expr_if_$g0_$g0);
 						const auto &expr_block_else = expr_block_else_g.get(3, mylang::$IdentifierType::$i_expr_block);
 
+						auto else_pos_before = get_instruction_block_id();
 						auto v_else_block = compile_expr(expr_block_else);
 						_debug_(active_function_blocks.back()->instruction_blocks.back()._debug_info = "else <- if (" + util::minimize_whitespaces(mylang::helpers::ansii_colored(expr_condition, ansii_colors, default_ansii_color)) + ")");
 						add_instruction_block();
@@ -2160,7 +2161,7 @@ struct Compiler
 							if (v_else_block.is_null())
 								throw 1;
 
-							add_instruction(Instruction_MOV {
+							add_instruction(else_pos_before, Instruction_MOV {
 								.dest = v_result,
 								.src = v_else_block,
 							});
