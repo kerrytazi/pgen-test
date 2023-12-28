@@ -75,7 +75,7 @@ expr_add: expr_mul ((ws0 ("+" | "-") ws0 expr_mul)*)
 
 expr_compare: expr_add ((ws0 ("<=" | ">=" | "<" | ">" | "==" | "!=") ws0 expr_add)?)
 
-expr_if: kv_if ws0 "(" ws0 expr ws0 ")" ws0 expr_block (ws0 kv_else ws0 expr_block)?
+expr_if: kv_if ws0 "(" ws0 expr ws0 ")" ws0 expr_block ((ws0 kv_else ws0 expr_block)?)
 
 expr_while: kv_while ws0 "(" ws0 expr ws0 ")" ws0 expr_block (ws0 kv_else ws0 expr_block)?
 

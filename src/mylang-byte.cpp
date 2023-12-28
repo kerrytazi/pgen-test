@@ -409,6 +409,16 @@ enum class InstructionOpCode : uint8_t
 	LC,
 	ADD,
 
+	CMP,
+
+	JMP,
+	JE,   // Zero,
+	JNE,  // NotZero,
+	JGT,  // Positive,
+	JLE,  // NotPositive,
+	JLT,  // Negative,
+	JGE,  // NotNegative,
+
 	HLT,
 };
 
@@ -424,6 +434,16 @@ struct Program
 	std::vector<RetInfo> ret_stack;
 	std::vector<ivalue_t> stack;
 	std::vector<ivalue_t> statics;
+
+	enum class CmpResult
+	{
+		None,
+		Equal,
+		Less,
+		Greater,
+	};
+
+	CmpResult last_cmp_result = CmpResult::None;
 
 	/*
 		number_1: 0000 0000 - 0111 1100
@@ -447,20 +467,20 @@ struct Program
 		else
 		if (packed == 0b0111'1101)
 		{
-			b += 2;
 			memcpy(&id, b, 2);
+			b += 2;
 		}
 		else
 		if (packed == 0b0111'1110)
 		{
-			b += 4;
 			memcpy(&id, b, 4);
+			b += 4;
 		}
 		else
 		{
-			b += 8;
 			assert(packed == 0b0111'1111);
 			memcpy(&id, b, 8);
+			b += 8;
 		}
 
 		return { id, is_static };
@@ -620,6 +640,104 @@ struct Program
 						break;
 					}
 
+				case InstructionOpCode::CMP:
+					{
+						const auto &left = unpack_value(b);
+						const auto &right = unpack_value(b);
+
+						assert(left && left->type == ERuntimeValueType::I64);
+						assert(right && right->type == ERuntimeValueType::I64);
+
+						last_cmp_result = CmpResult::None;
+
+						if (left.casted<RuntimeValueI64>()->val < right.casted<RuntimeValueI64>()->val)
+							last_cmp_result = CmpResult::Less;
+
+						if (left.casted<RuntimeValueI64>()->val > right.casted<RuntimeValueI64>()->val)
+							last_cmp_result = CmpResult::Greater;
+
+						if (left.casted<RuntimeValueI64>()->val == right.casted<RuntimeValueI64>()->val)
+							last_cmp_result = CmpResult::Equal;
+
+						break;
+					}
+
+				case InstructionOpCode::JMP:
+					{
+						auto [code_offset, is_static] = unpack_number(b);
+						(void)is_static;
+
+						b = bytes.data() + code_offset;
+
+						break;
+					}
+
+				case InstructionOpCode::JE:
+					{
+						auto [code_offset, is_static] = unpack_number(b);
+						(void)is_static;
+
+						if (last_cmp_result == CmpResult::Equal)
+							b = bytes.data() + code_offset;
+
+						break;
+					}
+
+				case InstructionOpCode::JNE:
+					{
+						auto [code_offset, is_static] = unpack_number(b);
+						(void)is_static;
+
+						if (last_cmp_result != CmpResult::Equal)
+							b = bytes.data() + code_offset;
+
+						break;
+					}
+
+				case InstructionOpCode::JGT:
+					{
+						auto [code_offset, is_static] = unpack_number(b);
+						(void)is_static;
+
+						if (last_cmp_result == CmpResult::Greater)
+							b = bytes.data() + code_offset;
+
+						break;
+					}
+
+				case InstructionOpCode::JLE:
+					{
+						auto [code_offset, is_static] = unpack_number(b);
+						(void)is_static;
+
+						if (last_cmp_result != CmpResult::Greater)
+							b = bytes.data() + code_offset;
+
+						break;
+					}
+
+				case InstructionOpCode::JLT:
+					{
+						auto [code_offset, is_static] = unpack_number(b);
+						(void)is_static;
+
+						if (last_cmp_result == CmpResult::Less)
+							b = bytes.data() + code_offset;
+
+						break;
+					}
+
+				case InstructionOpCode::JGE:
+					{
+						auto [code_offset, is_static] = unpack_number(b);
+						(void)is_static;
+
+						if (last_cmp_result != CmpResult::Less)
+							b = bytes.data() + code_offset;
+
+						break;
+					}
+
 
 				case InstructionOpCode::HLT:
 					return;
@@ -674,11 +792,33 @@ struct Compiler
 		}
 	};
 
+	enum class ConditionType
+	{
+		Zero,
+		NotZero,
+		Positive,
+		NotPositive,
+		Negative,
+		NotNegative,
+	};
+
+	struct CodePosMark
+	{
+		size_t id;
+
+		std::string to_string_bytecode() const
+		{
+			return "mark" + std::to_string(id);
+		}
+	};
+
 	using VarIDType_Base = std::variant<
 		LocalVariableID,
 		StaticVariableID,
 		CaptureVariableID,
-		ParameterVariableID
+		ParameterVariableID,
+		ConditionType,
+		CodePosMark
 	>;
 
 	struct VarIDType : VarIDType_Base
@@ -688,10 +828,37 @@ struct Compiler
 		{
 		}
 
+		std::string to_string_number() const
+		{
+			const auto &visitor = [&](const auto &v) -> size_t {
+				using T = std::decay_t<decltype(v)>;
+
+				if constexpr (std::is_same_v<T, ConditionType>)
+				{
+					throw 1;
+				}
+				else
+				{
+					return v.id;
+				}
+			};
+
+			return util::num_to_str(std::visit(visitor, *this));
+		}
+
 		std::string to_string_bytecode() const
 		{
-			const auto &visitor = [&](const auto &val) {
-				return val.to_string_bytecode();
+			const auto &visitor = [&](const auto &v) -> std::string {
+				using T = std::decay_t<decltype(v)>;
+
+				if constexpr (std::is_same_v<T, ConditionType>)
+				{
+					throw 1;
+				}
+				else
+				{
+					return v.to_string_bytecode();
+				}
 			};
 
 			return std::visit(visitor, *this);
@@ -701,7 +868,7 @@ struct Compiler
 		{
 			if (auto v_ret_static = std::get_if<StaticVariableID>(this))
 			{
-				if (v_ret_static->id != (size_t)type)
+				if (v_ret_static->id == (size_t)type)
 				{
 					return true;
 				}
@@ -749,8 +916,17 @@ struct Compiler
 	*/
 	static void pack_number(std::vector<uint8_t> &bytecode, const VarIDType &v)
 	{
-		const auto &visitor = [&](const auto &instr) {
-			return instr.id;
+		const auto &visitor = [&](const auto &v) -> size_t {
+			using T = std::decay_t<decltype(v)>;
+
+			if constexpr (std::is_same_v<T, ConditionType>)
+			{
+				throw 1;
+			}
+			else
+			{
+				return v.id;
+			}
 		};
 
 		uint64_t id = std::visit(visitor, v);
@@ -801,6 +977,25 @@ struct Compiler
 			bytecode.insert(bytecode.end(), (const uint8_t *)(&packed8), (const uint8_t *)(&packed8 + 1));
 		}
 	}
+
+	struct Instruction_NOP
+	{
+		_debug_(std::string _debug_info;);
+
+		void generate_bytecode(const FunctionBlock &funcblock, std::vector<uint8_t> &bytecode) const
+		{
+			bytecode.push_back((uint8_t)InstructionOpCode::NOP);
+		}
+
+		std::string to_string_bytecode() const
+		{
+			std::string res;
+
+			res += "nop";
+
+			return res;
+		}
+	};
 
 	struct Instruction_RET
 	{
@@ -979,6 +1174,194 @@ struct Compiler
 		}
 	};
 
+	struct Instruction_CMP
+	{
+		VarIDType left;
+		VarIDType right;
+
+		_debug_(std::string _debug_info;);
+
+		void generate_bytecode(const FunctionBlock &funcblock, std::vector<uint8_t> &bytecode) const
+		{
+			bytecode.push_back((uint8_t)InstructionOpCode::CMP);
+			pack_number(bytecode, funcblock.regenerate(left));
+			pack_number(bytecode, funcblock.regenerate(right));
+		}
+
+		std::string to_string_bytecode() const
+		{
+			std::string res;
+
+			res += "cmp ";
+			res += left.to_string_bytecode();
+			res += " ";
+			res += right.to_string_bytecode();
+
+			return res;
+		}
+	};
+
+	struct Instruction_JMP
+	{
+		CodePosMark mark;
+
+		_debug_(std::string _debug_info;);
+
+		void generate_bytecode(const FunctionBlock &funcblock, std::vector<uint8_t> &bytecode) const
+		{
+			bytecode.push_back((uint8_t)InstructionOpCode::JMP);
+			pack_number(bytecode, funcblock.regenerate(mark));
+		}
+
+		std::string to_string_bytecode() const
+		{
+			std::string res;
+
+			res += "jmp ";
+			res += "mark" + util::num_to_str(mark.id);
+
+			return res;
+		}
+	};
+
+	struct Instruction_JE
+	{
+		CodePosMark mark;
+
+		_debug_(std::string _debug_info;);
+
+		void generate_bytecode(const FunctionBlock &funcblock, std::vector<uint8_t> &bytecode) const
+		{
+			bytecode.push_back((uint8_t)InstructionOpCode::JE);
+			pack_number(bytecode, funcblock.regenerate(mark));
+		}
+
+		std::string to_string_bytecode() const
+		{
+			std::string res;
+
+			res += "je ";
+			res += "mark" + util::num_to_str(mark.id);
+
+			return res;
+		}
+	};
+
+	struct Instruction_JNE
+	{
+		CodePosMark mark;
+
+		_debug_(std::string _debug_info;);
+
+		void generate_bytecode(const FunctionBlock &funcblock, std::vector<uint8_t> &bytecode) const
+		{
+			bytecode.push_back((uint8_t)InstructionOpCode::JNE);
+			pack_number(bytecode, funcblock.regenerate(mark));
+		}
+
+		std::string to_string_bytecode() const
+		{
+			std::string res;
+
+			res += "jne ";
+			res += "mark" + util::num_to_str(mark.id);
+
+			return res;
+		}
+	};
+
+	struct Instruction_JGT
+	{
+		CodePosMark mark;
+
+		_debug_(std::string _debug_info;);
+
+		void generate_bytecode(const FunctionBlock &funcblock, std::vector<uint8_t> &bytecode) const
+		{
+			bytecode.push_back((uint8_t)InstructionOpCode::JGT);
+			pack_number(bytecode, funcblock.regenerate(mark));
+		}
+
+		std::string to_string_bytecode() const
+		{
+			std::string res;
+
+			res += "jgt ";
+			res += "mark" + util::num_to_str(mark.id);
+
+			return res;
+		}
+	};
+
+	struct Instruction_JLE
+	{
+		CodePosMark mark;
+
+		_debug_(std::string _debug_info;);
+
+		void generate_bytecode(const FunctionBlock &funcblock, std::vector<uint8_t> &bytecode) const
+		{
+			bytecode.push_back((uint8_t)InstructionOpCode::JLE);
+			pack_number(bytecode, funcblock.regenerate(mark));
+		}
+
+		std::string to_string_bytecode() const
+		{
+			std::string res;
+
+			res += "jle ";
+			res += "mark" + util::num_to_str(mark.id);
+
+			return res;
+		}
+	};
+
+	struct Instruction_JLT
+	{
+		CodePosMark mark;
+
+		_debug_(std::string _debug_info;);
+
+		void generate_bytecode(const FunctionBlock &funcblock, std::vector<uint8_t> &bytecode) const
+		{
+			bytecode.push_back((uint8_t)InstructionOpCode::JLT);
+			pack_number(bytecode, funcblock.regenerate(mark));
+		}
+
+		std::string to_string_bytecode() const
+		{
+			std::string res;
+
+			res += "jlt ";
+			res += "mark" + util::num_to_str(mark.id);
+
+			return res;
+		}
+	};
+
+	struct Instruction_JGE
+	{
+		CodePosMark mark;
+
+		_debug_(std::string _debug_info;);
+
+		void generate_bytecode(const FunctionBlock &funcblock, std::vector<uint8_t> &bytecode) const
+		{
+			bytecode.push_back((uint8_t)InstructionOpCode::JGE);
+			pack_number(bytecode, funcblock.regenerate(mark));
+		}
+
+		std::string to_string_bytecode() const
+		{
+			std::string res;
+
+			res += "jge ";
+			res += "mark" + util::num_to_str(mark.id);
+
+			return res;
+		}
+	};
+
 	struct Instruction_HLT
 	{
 		_debug_(std::string _debug_info;);
@@ -999,12 +1382,25 @@ struct Compiler
 	};
 
 	using InstructionType_Base = std::variant<
+		Instruction_NOP,
+
 		Instruction_RET,
 		Instruction_CALL,
 		Instruction_MOV,
 		Instruction_DGET,
 		Instruction_LC,
 		Instruction_ADD,
+
+		Instruction_CMP,
+
+		Instruction_JMP,
+		Instruction_JE,   // Zero,
+		Instruction_JNE,  // NotZero,
+		Instruction_JGT,  // Positive,
+		Instruction_JLE,  // NotPositive,
+		Instruction_JLT,  // Negative,
+		Instruction_JGE,  // NotNegative,
+
 		Instruction_HLT
 	>;
 
@@ -1055,10 +1451,18 @@ struct Compiler
 		std::unordered_map<std::string, LocalVariableID> variables;
 	};
 
-	struct FunctionBlock
+	struct InstructionBlock
 	{
 		std::vector<InstructionType> instructions;
-		size_t code_offset = (size_t)-1;
+		size_t code_offset = 0;
+
+		_debug_(std::string _debug_info;);
+	};
+
+	struct FunctionBlock
+	{
+		std::vector<InstructionBlock> instruction_blocks;
+		size_t code_offset = 0;
 
 		size_t scopes_variables_size = 0;
 		size_t captures_size = 0;
@@ -1097,6 +1501,16 @@ struct Compiler
 					return LocalVariableID{ scopes_variables_size + captures_size + parameters_size - v.id - 1 };
 				}
 				else
+				if constexpr (std::is_same_v<T, ConditionType>)
+				{
+					throw 1;
+				}
+				else
+				if constexpr (std::is_same_v<T, CodePosMark>)
+				{
+					return LocalVariableID{ code_offset + instruction_blocks[v.id].code_offset };
+				}
+				else
 				{
 					static_assert(vm::always_false_v<T>, "Unknown type");
 				}
@@ -1112,7 +1526,8 @@ struct Compiler
 
 	void push_function_block()
 	{
-		active_function_blocks.emplace_back(function_blocks.emplace_back(std::make_unique<FunctionBlock>()).get());
+		auto &function_block = active_function_blocks.emplace_back(function_blocks.emplace_back(std::make_unique<FunctionBlock>()).get());
+		function_block->instruction_blocks.emplace_back();
 	}
 
 	void pop_function_block()
@@ -1181,9 +1596,24 @@ struct Compiler
 		return { active_function_blocks.back()->captures_size++ };
 	}
 
+	void add_instruction(size_t instruction_block_id, InstructionType instruction)
+	{
+		active_function_blocks.back()->instruction_blocks[instruction_block_id].instructions.push_back(instruction);
+	}
+
 	void add_instruction(InstructionType instruction)
 	{
-		active_function_blocks.back()->instructions.push_back(instruction);
+		add_instruction(get_instruction_block_id(), instruction);
+	}
+
+	size_t get_instruction_block_id() const
+	{
+		return active_function_blocks.back()->instruction_blocks.size() - 1;
+	}
+
+	void add_instruction_block()
+	{
+		active_function_blocks.back()->instruction_blocks.emplace_back();
 	}
 
 	void declare_local_variable(const std::string &token, LocalVariableID id)
@@ -1318,10 +1748,64 @@ struct Compiler
 					const auto &expr_compare = par;
 
 					const auto &expr_left = expr_compare.get(0);
+					const auto &expr_compare_$g0 = expr_compare.get(1, mylang::$IdentifierType::$i_expr_compare_$g0);
 
 					auto v_expr_left = compile_expr(expr_left);
 
-					// TODO;
+					if (expr_compare_$g0.size() > 0)
+					{
+						_debug_(std::string _debug_info = util::minimize_whitespaces(mylang::helpers::ansii_colored(expr_left, ansii_colors, default_ansii_color)););
+
+						{
+							const auto &expr_compare_$g0_$g0 = expr_compare_$g0.get(0, mylang::$IdentifierType::$i_expr_compare_$g0_$g0);
+							const auto &expr_compare_$g0_$g0_$g0 = expr_compare_$g0_$g0.get(1, mylang::$IdentifierType::$i_expr_compare_$g0_$g0_$g0);
+							const auto &expr_right = expr_compare_$g0_$g0.get(3);
+
+							_debug_(_debug_info += util::minimize_whitespaces(mylang::helpers::ansii_colored(expr_compare_$g0_$g0, ansii_colors, default_ansii_color)););
+
+							auto v_expr_right = compile_expr(expr_right);
+
+							add_instruction(Instruction_CMP{
+								.left = v_expr_left,
+								.right = v_expr_right,
+								_debug_(._debug_info = _debug_info)
+							});
+
+							if (expr_compare_$g0_$g0_$g0.get(0).literal == "==")
+							{
+								v_expr_left = ConditionType::Zero;
+							}
+							else
+							if (expr_compare_$g0_$g0_$g0.get(0).literal == "!=")
+							{
+								v_expr_left = ConditionType::NotZero;
+							}
+							else
+							if (expr_compare_$g0_$g0_$g0.get(0).literal == ">")
+							{
+								v_expr_left = ConditionType::Positive;
+							}
+							else
+							if (expr_compare_$g0_$g0_$g0.get(0).literal == "<=")
+							{
+								v_expr_left = ConditionType::NotPositive;
+							}
+							else
+							if (expr_compare_$g0_$g0_$g0.get(0).literal == "<")
+							{
+								v_expr_left = ConditionType::Negative;
+							}
+							else
+							if (expr_compare_$g0_$g0_$g0.get(0).literal == ">=")
+							{
+								v_expr_left = ConditionType::NotNegative;
+							}
+							else
+							{
+								throw 1;
+							}
+						}
+					}
 
 					return v_expr_left;
 				}
@@ -1359,12 +1843,6 @@ struct Compiler
 									_debug_(._debug_info = _debug_info)
 								});
 
-								v_expr_left = v_result;
-							}
-							else
-							if (expr_add_$g0_$g0_$g0.get(0).literal == "-")
-							{
-								auto v_result = add_local_variable();
 								v_expr_left = v_result;
 							}
 							else
@@ -1585,11 +2063,11 @@ struct Compiler
 							.src = v_ret,
 							_debug_(._debug_info = "// Return value")
 						});
-					}
 
-					add_instruction(Instruction_RET {
-						_debug_(._debug_info = "// Return from function")
-					});
+						add_instruction(Instruction_RET {
+							_debug_(._debug_info = "// Return from function")
+						});
+					}
 
 					return result;
 				}
@@ -1597,6 +2075,103 @@ struct Compiler
 				{
 					const auto &expr_block = par;
 					return compile_expr_block(expr_block);
+				}
+			case mylang::$IdentifierType::$i_expr_if:
+				{
+					const auto &expr_if = par;
+					const auto &expr_condition = expr_if.get(4);
+					const auto &expr_block_if = expr_if.get(8, mylang::$IdentifierType::$i_expr_block);
+					const auto &expr_block_else_maybe = expr_if.get(9, mylang::$IdentifierType::$i_expr_if_$g0);
+
+					auto v_condition = compile_expr(expr_condition);
+					auto condition = std::get_if<ConditionType>(&v_condition);
+
+					if (!condition)
+						throw 1;
+
+					auto if_pos = get_instruction_block_id();
+
+					add_instruction_block();
+					_debug_(active_function_blocks.back()->instruction_blocks.back()._debug_info = "if (" + util::minimize_whitespaces(mylang::helpers::ansii_colored(expr_condition, ansii_colors, default_ansii_color)) + ")");
+					auto v_if_block = compile_expr(expr_block_if);
+					auto if_pos_before = get_instruction_block_id();
+					add_instruction_block();
+					auto if_pos_after = get_instruction_block_id();
+
+					VarIDType v_result = StaticVariableID{ (size_t)StaticGlobalType::Null };
+
+					if (!v_if_block.is_null())
+					{
+						v_result = add_local_variable();
+
+						add_instruction(Instruction_MOV {
+							.dest = v_result,
+							.src = v_if_block,
+						});
+					}
+
+					// inverse logic: if-not then jump
+					switch (*condition)
+					{
+						case ConditionType::Zero:
+							add_instruction(if_pos, Instruction_JNE {
+								.mark = CodePosMark{ .id = if_pos_after },
+							});
+							break;
+						case ConditionType::NotZero:
+							add_instruction(if_pos, Instruction_JE {
+								.mark = CodePosMark{ .id = if_pos_after },
+							});
+							break;
+						case ConditionType::Positive:
+							add_instruction(if_pos, Instruction_JLE {
+								.mark = CodePosMark{ .id = if_pos_after },
+							});
+							break;
+						case ConditionType::NotPositive:
+							add_instruction(if_pos, Instruction_JGT {
+								.mark = CodePosMark{ .id = if_pos_after },
+							});
+							break;
+						case ConditionType::Negative:
+							add_instruction(if_pos, Instruction_JGE {
+								.mark = CodePosMark{ .id = if_pos_after },
+							});
+							break;
+						case ConditionType::NotNegative:
+							add_instruction(if_pos, Instruction_JLT {
+								.mark = CodePosMark{ .id = if_pos_after },
+							});
+							break;
+					}
+
+					if (expr_block_else_maybe.size() > 0)
+					{
+						const auto &expr_block_else_g = expr_block_else_maybe.get(0, mylang::$IdentifierType::$i_expr_if_$g0_$g0);
+						const auto &expr_block_else = expr_block_else_g.get(3, mylang::$IdentifierType::$i_expr_block);
+
+						auto v_else_block = compile_expr(expr_block_else);
+						_debug_(active_function_blocks.back()->instruction_blocks.back()._debug_info = "else <- if (" + util::minimize_whitespaces(mylang::helpers::ansii_colored(expr_condition, ansii_colors, default_ansii_color)) + ")");
+						add_instruction_block();
+						auto else_pos_after = get_instruction_block_id();
+
+						if (!v_if_block.is_null())
+						{
+							if (v_else_block.is_null())
+								throw 1;
+
+							add_instruction(Instruction_MOV {
+								.dest = v_result,
+								.src = v_else_block,
+							});
+						}
+
+						add_instruction(if_pos_before, Instruction_JMP {
+							.mark = CodePosMark{ .id = else_pos_after },
+						});
+					}
+
+					return v_result;
 				}
 		}
 
@@ -1631,6 +2206,15 @@ struct Compiler
 		}
 
 		return StaticVariableID{ (size_t)StaticGlobalType::Null };
+	}
+
+	void compile_statement_if(const mylang::$Parsed &statement_if)
+	{
+		assert(statement_if.identifier == mylang::$IdentifierType::$i_statement_if);
+
+		const auto &expr_if = statement_if.get(0, mylang::$IdentifierType::$i_expr_if);
+
+		auto v_expr = compile_expr(expr_if);
 	}
 
 	void compile_statement_let(const mylang::$Parsed &statement_let)
@@ -1669,6 +2253,31 @@ struct Compiler
 		});
 	}
 
+	void compile_statement_return(const mylang::$Parsed &statement_return)
+	{
+		assert(statement_return.identifier == mylang::$IdentifierType::$i_statement_return);
+
+		const auto &statement_return_$g0 = statement_return.get(1, mylang::$IdentifierType::$i_statement_return_$g0);
+
+		if (statement_return_$g0.size() > 0)
+		{
+			const auto &statement_return_$g0_$g0 = statement_return_$g0.get(0, mylang::$IdentifierType::$i_statement_return_$g0_$g0);
+			const auto &expr = statement_return_$g0_$g0.get(1);
+
+			auto v_expr = compile_expr(expr);
+
+			add_instruction(Instruction_MOV {
+				.dest = StaticVariableID{ (size_t)StaticGlobalType::RetVal },
+				.src = v_expr,
+				_debug_(._debug_info = util::minimize_whitespaces(mylang::helpers::ansii_colored(expr, ansii_colors, default_ansii_color)))
+			});
+		}
+
+		add_instruction(Instruction_RET {
+			_debug_(._debug_info = util::minimize_whitespaces(mylang::helpers::ansii_colored(statement_return, ansii_colors, default_ansii_color)))
+		});
+	}
+
 	void compile_statement_expr(const mylang::$Parsed &statement_expr)
 	{
 		assert(statement_expr.identifier == mylang::$IdentifierType::$i_statement_expr);
@@ -1688,10 +2297,20 @@ struct Compiler
 					const auto &statement = par;
 					return compile_statement(statement.group[0]);
 				}
+			case mylang::$IdentifierType::$i_statement_if:
+				{
+					const auto &statement_if = par;
+					return compile_statement_if(statement_if);
+				}
 			case mylang::$IdentifierType::$i_statement_let:
 				{
 					const auto &statement_let = par;
 					return compile_statement_let(statement_let);
+				}
+			case mylang::$IdentifierType::$i_statement_return:
+				{
+					const auto &statement_return = par;
+					return compile_statement_return(statement_return);
 				}
 			case mylang::$IdentifierType::$i_statement_expr:
 				{
@@ -1739,15 +2358,35 @@ struct Compiler
 		});
 	}
 
-	void generate_bytecode(std::vector<uint8_t> &bytecode) const
+	std::vector<uint8_t> generate_bytecode()
 	{
-		for (const auto &function_block : function_blocks)
-		{
-			function_block->code_offset = bytecode.size();
+		std::vector<uint8_t> bytecode;
+		size_t last_bytecode_size = 0;
+		bool changed = true;
 
-			for (const auto &instruction : function_block->instructions)
-				instruction.generate_bytecode(*function_block, bytecode);
+		// Need to generate code multiple times to calculate all mark-offsets
+		while (changed)
+		{
+			bytecode.clear();
+
+			for (const auto &function_block : function_blocks)
+			{
+				function_block->code_offset = bytecode.size();
+
+				for (auto &instruction_block : function_block->instruction_blocks)
+				{
+					instruction_block.code_offset = bytecode.size() - function_block->code_offset;
+
+					for (const auto &instruction : instruction_block.instructions)
+						instruction.generate_bytecode(*function_block, bytecode);
+				}
+			}
+
+			changed = last_bytecode_size != bytecode.size();
+			last_bytecode_size = bytecode.size();
 		}
+
+		return bytecode;
 	}
 
 	std::string to_string_bytecode() const
@@ -1826,8 +2465,7 @@ struct Compiler
 
 			const auto &function_block = function_blocks[i];
 
-			// _debug_(result += "; code offset = " + std::to_string(function_block->code_offset) + "\n");
-			_debug_(result += "; code offset = " + std::to_string(bytes_pos) + "\n");
+			_debug_(result += "; code offset = " + util::num_to_str(function_block->code_offset) + "\n");
 			_debug_(result += "; capture size = " + std::to_string(function_block->captures_size) + "\n");
 			_debug_(result += "; parameter size = " + std::to_string(function_block->parameters_size) + "\n");
 			_debug_(result += "; stack size = " + std::to_string(function_block->scopes_variables_size) + "\n");
@@ -1844,32 +2482,54 @@ struct Compiler
 			_debug_(std::vector<std::string> results_debug_bytes_pos_s;);
 			_debug_(std::vector<std::string> results_debug;);
 
-			for (const auto &instruction : function_block->instructions)
+			for (size_t instruction_block_index = 0; instruction_block_index < function_block->instruction_blocks.size(); ++instruction_block_index)
 			{
-				results.push_back(instruction.to_string_bytecode());
+				const auto &instruction_block = function_block->instruction_blocks[instruction_block_index];
+
+				results.push_back("mark" + util::num_to_str(instruction_block_index) + ":" _debug_("   ; " + instruction_block._debug_info));
 
 				_debug_({
-					results_debug.push_back(instruction._get_debug_info());
-					results_debug_bytes.clear();
-					instruction.generate_bytecode(*function_block, results_debug_bytes);
-					results_debug_bytes_s.push_back(util::bytes_to_str(results_debug_bytes));
-					results_debug_bytes_pos_s.push_back(util::num_to_str(bytes_pos));
-					bytes_pos += results_debug_bytes.size();
-					max_length = results.back().size() > max_length ? results.back().size() : max_length;
-					max_length_bytes = results_debug_bytes_s.back().size() > max_length_bytes ? results_debug_bytes_s.back().size() : max_length_bytes;
-					max_length_bytes_pos = results_debug_bytes_pos_s.back().size() > max_length_bytes_pos ? results_debug_bytes_pos_s.back().size() : max_length_bytes_pos;
+					results_debug.push_back("");
+					results_debug_bytes_s.push_back("");
+					results_debug_bytes_pos_s.push_back("");
 				});
+
+				for (const auto &instruction : instruction_block.instructions)
+				{
+					results.push_back(instruction.to_string_bytecode());
+
+					_debug_({
+						results_debug.push_back(instruction._get_debug_info());
+						results_debug_bytes.clear();
+						instruction.generate_bytecode(*function_block, results_debug_bytes);
+						results_debug_bytes_s.push_back(util::bytes_to_str(results_debug_bytes));
+						results_debug_bytes_pos_s.push_back(util::num_to_str(bytes_pos));
+						bytes_pos += results_debug_bytes.size();
+						max_length = results.back().size() > max_length ? results.back().size() : max_length;
+						max_length_bytes = results_debug_bytes_s.back().size() > max_length_bytes ? results_debug_bytes_s.back().size() : max_length_bytes;
+						max_length_bytes_pos = results_debug_bytes_pos_s.back().size() > max_length_bytes_pos ? results_debug_bytes_pos_s.back().size() : max_length_bytes_pos;
+					});
+				}
 			}
 
 			for (size_t i = 0; i < results.size(); ++i)
 			{
-				result +=
-					"    "
-					_debug_(+ std::string(max_length_bytes_pos - results_debug_bytes_pos_s[i].size(), ' ') + results_debug_bytes_pos_s[i] + "   ")
-					_debug_(+ results_debug_bytes_s[i] + std::string(max_length_bytes - results_debug_bytes_s[i].size() + 3, ' '))
-					+ results[i]
-					_debug_(+ std::string(max_length - results[i].size() + 3, ' ') + "; " + results_debug[i])
-					+ "\n";
+				if (results[i].starts_with("mark"))
+				{
+					result +=
+						results[i]
+						+ "\n";
+				}
+				else
+				{
+					result +=
+						"    "
+						_debug_(+ std::string(max_length_bytes_pos - results_debug_bytes_pos_s[i].size(), ' ') + results_debug_bytes_pos_s[i] + "   ")
+						_debug_(+ results_debug_bytes_s[i] + std::string(max_length_bytes - results_debug_bytes_s[i].size() + 3, ' '))
+						+ results[i]
+						_debug_(+ std::string(max_length - results[i].size() + 3, ' ') + "; " + results_debug[i])
+						+ "\n";
+				}
 			}
 		}
 
@@ -1907,12 +2567,12 @@ void mylang_byte_main(int argc, const char **argv)
 		vm::Compiler compiler;
 		compiler.compile_root(root);
 
+		vm::Program program;
+		program.bytes = compiler.generate_bytecode();
+
 		std::cout << "--- bytecode begin ---\n";
 		std::cout << compiler.to_string_bytecode();
 		std::cout << "--- bytecode end ---\n";
-
-		vm::Program program;
-		compiler.generate_bytecode(program.bytes);
 
 		{
 			for (size_t i = 0; i < compiler.statics.size(); ++i)

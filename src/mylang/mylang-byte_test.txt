@@ -1,13 +1,19 @@
 
+if (2 > 3) {
+	std.print(2);
+} else {
+	std.print(3);
+}
+
 
 let func1 = |a, b| {
-	a + b
+	return a + b;
 };
 
 let c2 = 55;
 
 let func2 = |a, b_func| {
-	c2 + a + b_func(func1(a, c2), a)
+	return c2 + a + b_func(func1(a, c2), a);
 };
 
 let a = 33;
