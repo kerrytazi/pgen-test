@@ -1,4 +1,17 @@
 
+let counter1 = 0;
+
+while (counter1 < 10) {
+	let counter2 = 0;
+
+	while (counter2 < 10) {
+		std.print(counter1, counter2);
+		counter2 = counter2 + 1;
+	}
+
+	counter1 = counter1 + 1;
+}
+
 if (2 > 3) {
 	std.print(2);
 } else {
@@ -23,4 +36,10 @@ let b = 44;
 let c = a + b;
 
 std.print(func1(b, c) + func2(c, func1));
+
+
+exports.my_update = |a, b| {
+	std.print(123);
+	a(b);
+};
 

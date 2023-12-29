@@ -367,13 +367,18 @@ struct RuntimeValueDict : IRuntimeValueBaseTemplated<ERuntimeValueType::Dict>
 	}
 };
 
+struct FunctionInfo
+{
+	size_t code_offset = (size_t)-1;
+	size_t stack_size = 0;
+};
+
 struct RuntimeValueLambda : IRuntimeValueBaseTemplated<ERuntimeValueType::Lambda>
 {
 	using lambda_t = std::function<void(Program &program, const std::span<ivalue_t> &args)>;
 
 	lambda_t val;
-	size_t stack_size = 0;
-	size_t code_offset = (size_t)-1;
+	FunctionInfo func_info;
 	small_vector<ivalue_t, 4> captures;
 
 	RuntimeValueLambda() : IRuntimeValueBaseTemplated<ERuntimeValueType::Lambda>() {}
@@ -406,6 +411,7 @@ enum class InstructionOpCode : uint8_t
 	CALL,
 	MOV,
 	DGET,
+	DSET,
 	LC,
 	ADD,
 
@@ -434,6 +440,8 @@ struct Program
 	std::vector<RetInfo> ret_stack;
 	std::vector<ivalue_t> stack;
 	std::vector<ivalue_t> statics;
+
+	FunctionInfo entry_point;
 
 	enum class CmpResult
 	{
@@ -501,13 +509,80 @@ struct Program
 		return unpack_value(unpack_number(b), stack_offset);
 	}
 
-	void run(size_t code_offset, size_t stack_size)
+	ivalue_t run_call(const std::initializer_list<std::string> &path, const std::vector<ivalue_t> &args)
 	{
-		stack.resize(stack_size);
+		return run_call(*resolve(path)->casted<vm::RuntimeValueLambda>(), args);
+	}
+
+	ivalue_t run_call(const RuntimeValueLambda &lambda, const std::vector<ivalue_t> &args)
+	{
+		size_t prev_size = stack.size();
+		size_t num_args = args.size();
+		size_t num_captures = lambda.captures.size();
+		size_t func_stack_size = lambda.func_info.stack_size;
+
+		size_t func_total_stack_offset = num_args + num_captures + func_stack_size;
+
+		stack.resize(prev_size + func_total_stack_offset);
+
+		ExitScope _onexit([&]() {
+			stack.resize(prev_size);
+		});
+
+		for (size_t i = 0; i < num_args; ++i)
+			stack[prev_size + i] = args[i];
+			// stack[prev_size + i] = unpack_value(b, func_total_stack_offset);
+
+		for (size_t i = 0; i < num_captures; ++i)
+			stack[prev_size + num_args + i] = lambda.captures[i];
+
+		if (lambda.func_info.code_offset == (size_t)-1)
+		{
+			assert(lambda.val);
+			assert(lambda.captures.size() == 0);
+			assert(lambda.func_info.stack_size == 0);
+			lambda.val(*this, std::span<ivalue_t>{ stack.data() + prev_size, num_args } );
+		}
+		else
+		{
+			ret_stack.push_back(RetInfo {
+				//.code_offset = (size_t)(b - bytes.data()),
+				.code_offset = (size_t)-1,
+				.stack_size = prev_size,
+			});
+
+			// b = bytes.data() + lambda.func_info.code_offset;
+
+			run(FunctionInfo {
+				.code_offset = lambda.func_info.code_offset,
+				.stack_size = stack.size(),
+			});
+		}
+
+		return get_retval();
+	}
+
+	void run()
+	{
+		run(entry_point);
+	}
+
+	void run(const std::initializer_list<std::string> &path)
+	{
+		run(resolve(path)->casted<vm::RuntimeValueLambda>()->func_info);
+	}
+
+	void run(const FunctionInfo &func_info)
+	{
+		size_t prev_stack_size = stack.size();
+		stack.resize(func_info.stack_size);
+		ExitScope _onexit([&]() {
+			stack.resize(prev_stack_size);
+		});
 
 		const uint8_t *b = bytes.data();
 
-		b += code_offset;
+		b += func_info.code_offset;
 
 		while (42)
 		{
@@ -548,7 +623,7 @@ struct Program
 						size_t prev_size = stack.size();
 						size_t num_args = num_args_pair.first;
 						size_t num_captures = lambda.captures.size();
-						size_t func_stack_size = lambda.stack_size;
+						size_t func_stack_size = lambda.func_info.stack_size;
 
 						size_t func_total_stack_offset = num_args + num_captures + func_stack_size;
 
@@ -560,11 +635,11 @@ struct Program
 						for (size_t i = 0; i < num_captures; ++i)
 							stack[prev_size + num_args + i] = lambda.captures[i];
 
-						if (lambda.code_offset == (size_t)-1)
+						if (lambda.func_info.code_offset == (size_t)-1)
 						{
 							assert(lambda.val);
 							assert(lambda.captures.size() == 0);
-							assert(lambda.stack_size == 0);
+							assert(lambda.func_info.stack_size == 0);
 							lambda.val(*this, std::span<ivalue_t>{ stack.data() + prev_size, num_args } );
 							stack.resize(prev_size);
 						}
@@ -575,7 +650,7 @@ struct Program
 								.stack_size = prev_size,
 							});
 
-							b = bytes.data() + lambda.code_offset;
+							b = bytes.data() + lambda.func_info.code_offset;
 						}
 
 						break;
@@ -605,6 +680,21 @@ struct Program
 						assert(it != dict_val.end());
 
 						result = it->second;
+						break;
+					}
+
+				case InstructionOpCode::DSET:
+					{
+						const auto &dict = unpack_value(b);
+						const auto &path = unpack_value(b);
+						const auto &val = unpack_value(b);
+
+						assert(dict && dict->type == ERuntimeValueType::Dict);
+						assert(path && path->type == ERuntimeValueType::Str);
+
+						const auto &dict_val = dict.casted<RuntimeValueDict>()->val;
+						auto it = dict.casted<RuntimeValueDict>()->val[path.casted<RuntimeValueStr>()->val] = val;
+
 						break;
 					}
 
@@ -746,6 +836,31 @@ struct Program
 					throw 1;
 			}
 		}
+	}
+
+	void set_retval(ivalue_t val)
+	{
+		statics[(size_t)StaticGlobalType::RetVal] = val;
+	}
+
+	ivalue_t get_retval()
+	{
+		return statics[(size_t)StaticGlobalType::RetVal];
+	}
+
+	ivalue_t *resolve(const std::initializer_list<std::string> &path)
+	{
+		ivalue_t *v = &statics[(size_t)StaticGlobalType::ResolveDict];
+
+		for (const auto &tok : path)
+		{
+			if (!*v)
+				*v = sptr<RuntimeValueDict>::create_bounded();
+
+			v = &v->casted<RuntimeValueDict>()->val[tok];
+		}
+
+		return v;
 	}
 };
 
@@ -1107,6 +1222,37 @@ struct Compiler
 		}
 	};
 
+	struct Instruction_DSET
+	{
+		VarIDType dict;
+		VarIDType path;
+		VarIDType val;
+
+		_debug_(std::string _debug_info;);
+
+		void generate_bytecode(const FunctionBlock &funcblock, std::vector<uint8_t> &bytecode) const
+		{
+			bytecode.push_back((uint8_t)InstructionOpCode::DSET);
+			pack_number(bytecode, funcblock.regenerate(dict));
+			pack_number(bytecode, funcblock.regenerate(path));
+			pack_number(bytecode, funcblock.regenerate(val));
+		}
+
+		std::string to_string_bytecode() const
+		{
+			std::string res;
+
+			res += "dset ";
+			res += dict.to_string_bytecode();
+			res += " ";
+			res += path.to_string_bytecode();
+			res += " ";
+			res += val.to_string_bytecode();
+
+			return res;
+		}
+	};
+
 	struct Instruction_LC
 	{
 		VarIDType result;
@@ -1388,6 +1534,7 @@ struct Compiler
 		Instruction_CALL,
 		Instruction_MOV,
 		Instruction_DGET,
+		Instruction_DSET,
 		Instruction_LC,
 		Instruction_ADD,
 
@@ -1459,6 +1606,20 @@ struct Compiler
 		_debug_(std::string _debug_info;);
 	};
 
+	enum class EToResolveMarkType
+	{
+		Break,
+		Continue,
+	};
+
+	struct ToResolveMark
+	{
+		EToResolveMarkType type;
+		size_t instruction_block_id;
+		size_t instruction_id;
+		size_t value_instruction_id;
+	};
+
 	struct FunctionBlock
 	{
 		std::vector<InstructionBlock> instruction_blocks;
@@ -1472,6 +1633,8 @@ struct Compiler
 		std::unordered_map<std::string, ParameterVariableID> parameters;
 
 		std::vector<FunctionScope> scopes;
+
+		std::vector<ToResolveMark> to_resolve_marks;
 
 		_debug_(std::string _debug_func_name;);
 		_debug_(std::unordered_map<size_t _comma_ FunctionBlock *> _debug_lc;);
@@ -1640,6 +1803,28 @@ struct Compiler
 		assert(result.second);
 	}
 
+	VarIDType find_local_or_dget(const std::string &tok, const mylang::$Parsed &token)
+	{
+		if (auto v_value = find_local(tok))
+		{
+			return v_value.value();
+		}
+		else
+		{
+			auto v_path = add_static_str(tok);
+			auto v_result_dget = add_local_variable();
+
+			add_instruction(Instruction_DGET {
+				.result = v_result_dget,
+				.dict = StaticVariableID{ (size_t)StaticGlobalType::ResolveDict },
+				.path = v_path,
+				_debug_(._debug_info = util::minimize_whitespaces(mylang::helpers::ansii_colored(token, ansii_colors, default_ansii_color)))
+			});
+
+			return v_result_dget;
+		}
+	}
+
 	std::optional<VarIDType> find_local(const std::string &tok)
 	{
 		const auto &active_function = active_function_blocks.back();
@@ -1765,7 +1950,7 @@ struct Compiler
 
 							auto v_expr_right = compile_expr(expr_right);
 
-							add_instruction(Instruction_CMP{
+							add_instruction(Instruction_CMP {
 								.left = v_expr_left,
 								.right = v_expr_right,
 								_debug_(._debug_info = _debug_info)
@@ -1836,7 +2021,7 @@ struct Compiler
 							{
 								auto v_result = add_local_variable();
 
-								add_instruction(Instruction_ADD{
+								add_instruction(Instruction_ADD {
 									.result = v_result,
 									.left = v_expr_left,
 									.right = v_expr_right,
@@ -1880,6 +2065,70 @@ struct Compiler
 
 					return add_static_i64(stoll(number.flatten()));
 				}
+			case mylang::$IdentifierType::$i_expr_assign:
+				{
+					const auto &expr_assign = par;
+					const auto &token_path = expr_assign.get(0, mylang::$IdentifierType::$i_token_path);
+					const auto &expr = expr_assign.get(4);
+
+					auto v_expr = compile_expr(expr);
+
+					// from token_path parsing
+					{
+						const auto &token = token_path.get(0, mylang::$IdentifierType::$i_token);
+						const auto &token_path_$g0 = token_path.get(1, mylang::$IdentifierType::$i_token_path_$g0);
+
+						std::string tok = token.flatten();
+
+						VarIDType v_result = find_local_or_dget(tok, token);
+
+						if (token_path_$g0.size() > 0)
+						{
+							for (size_t i = 0; i < token_path_$g0.size(); ++i)
+							{
+								const auto &token_path_$g0_$g0 = token_path_$g0.get(i, mylang::$IdentifierType::$i_token_path_$g0_$g0);
+								const auto &token = token_path_$g0_$g0.get(3, mylang::$IdentifierType::$i_token);
+
+								std::string tok = token.flatten();
+
+								auto v_path = add_static_str(tok);
+
+								if (i + 1 < token_path_$g0.size())
+								{
+									auto v_new_result = add_local_variable();
+
+									add_instruction(Instruction_DGET {
+										.result = v_new_result,
+										.dict = v_result,
+										.path = v_path,
+										_debug_(._debug_info = util::minimize_whitespaces(mylang::helpers::ansii_colored(token, ansii_colors, default_ansii_color)))
+									});
+
+									v_result = v_new_result;
+								}
+								else
+								{
+									add_instruction(Instruction_DSET {
+										.dict = v_result,
+										.path = v_path,
+										.val = v_expr,
+										_debug_(._debug_info = util::minimize_whitespaces(mylang::helpers::ansii_colored(token, ansii_colors, default_ansii_color)))
+									});
+
+									v_result = v_expr;
+								}
+							}
+						}
+
+						add_instruction(Instruction_MOV {
+							.dest = v_result,
+							.src = v_expr,
+							_debug_(._debug_info = util::minimize_whitespaces(mylang::helpers::ansii_colored(expr_assign, ansii_colors, default_ansii_color)))
+						});
+
+						return v_result;
+					}
+				}
 			case mylang::$IdentifierType::$i_token_path:
 				{
 					const auto &token_path = par;
@@ -1888,26 +2137,7 @@ struct Compiler
 
 					std::string tok = token.flatten();
 
-					VarIDType v_result = StaticVariableID{ (size_t)StaticGlobalType::Null };
-
-					if (auto v_value = find_local(tok))
-					{
-						v_result = v_value.value();
-					}
-					else
-					{
-						auto v_result_dget = add_local_variable();
-						auto v_path = add_static_str(tok);
-
-						add_instruction(Instruction_DGET{
-							.result = v_result_dget,
-							.dict = StaticVariableID{ (size_t)StaticGlobalType::ResolveDict },
-							.path = v_path,
-							_debug_(._debug_info = util::minimize_whitespaces(mylang::helpers::ansii_colored(token, ansii_colors, default_ansii_color)))
-						});
-
-						v_result = v_result_dget;
-					}
+					VarIDType v_result = find_local_or_dget(tok, token);
 
 					if (token_path_$g0.size() > 0)
 					{
@@ -1918,10 +2148,10 @@ struct Compiler
 
 							std::string tok = token.flatten();
 
-							auto v_new_result = add_local_variable();
 							auto v_path = add_static_str(tok);
+							auto v_new_result = add_local_variable();
 
-							add_instruction(Instruction_DGET{
+							add_instruction(Instruction_DGET {
 								.result = v_new_result,
 								.dict = v_result,
 								.path = v_path,
@@ -1964,7 +2194,7 @@ struct Compiler
 						}
 					}
 
-					add_instruction(Instruction_CALL{
+					add_instruction(Instruction_CALL {
 						.func = v_func,
 						.args = std::move(v_args),
 						_debug_(._debug_info = util::minimize_whitespaces(mylang::helpers::ansii_colored(expr_call, ansii_colors, default_ansii_color)))
@@ -1972,7 +2202,7 @@ struct Compiler
 
 					auto v_result = add_local_variable();
 
-					add_instruction(Instruction_MOV{
+					add_instruction(Instruction_MOV {
 						.dest = v_result,
 						.src = StaticVariableID{ (size_t)StaticGlobalType::RetVal },
 						_debug_(._debug_info = "<retval> = " + util::minimize_whitespaces(mylang::helpers::ansii_colored(expr_call, ansii_colors, default_ansii_color)))
@@ -1992,7 +2222,7 @@ struct Compiler
 					collect_captures(expr_function, capture_tokens, ignore_tokens);
 
 					for (const auto &capture_token : capture_tokens)
-						captures.push_back(find_local(capture_token).value());
+						captures.push_back(find_local_or_dget(capture_token, expr_function));
 
 					auto result_lambda = add_static_lambda(LambdaInfo {
 						// .function_block = stacks.back().function_block,
@@ -2063,11 +2293,11 @@ struct Compiler
 							.src = v_ret,
 							_debug_(._debug_info = "// Return value")
 						});
-
-						add_instruction(Instruction_RET {
-							_debug_(._debug_info = "// Return from function")
-						});
 					}
+
+					add_instruction(Instruction_RET {
+						_debug_(._debug_info = "// Return from function")
+					});
 
 					return result;
 				}
@@ -2156,11 +2386,11 @@ struct Compiler
 						add_instruction_block();
 						auto else_pos_after = get_instruction_block_id();
 
-						if (!v_if_block.is_null())
-						{
-							if (v_else_block.is_null())
-								throw 1;
+						if (v_if_block.is_null() != v_else_block.is_null())
+							throw 1;
 
+						if (!v_else_block.is_null())
+						{
 							add_instruction(else_pos_before, Instruction_MOV {
 								.dest = v_result,
 								.src = v_else_block,
@@ -2170,6 +2400,151 @@ struct Compiler
 						add_instruction(if_pos_before, Instruction_JMP {
 							.mark = CodePosMark{ .id = else_pos_after },
 						});
+					}
+
+					return v_result;
+				}
+			case mylang::$IdentifierType::$i_expr_while:
+				{
+					const auto &expr_while = par;
+					const auto &expr_condition = expr_while.get(4);
+					const auto &expr_block_while = expr_while.get(8, mylang::$IdentifierType::$i_expr_block);
+					const auto &expr_block_else_maybe = expr_while.get(9, mylang::$IdentifierType::$i_expr_while_$g0);
+
+					std::vector<ToResolveMark> to_resolve_marks;
+
+					add_instruction_block();
+
+					auto v_condition = compile_expr(expr_condition);
+					auto condition = std::get_if<ConditionType>(&v_condition);
+
+					if (!condition)
+						throw 1;
+
+					auto while_pos = get_instruction_block_id();
+
+					add_instruction_block();
+					_debug_(active_function_blocks.back()->instruction_blocks.back()._debug_info = "while (" + util::minimize_whitespaces(mylang::helpers::ansii_colored(expr_condition, ansii_colors, default_ansii_color)) + ")");
+					auto v_while_block = compile_expr(expr_block_while);
+
+					if (!v_while_block.is_null())
+						throw 1;
+
+					{
+						auto &fb = active_function_blocks.back();
+						auto it = std::remove_if(fb->to_resolve_marks.begin(), fb->to_resolve_marks.end(), [](const auto &v) {
+							return v.type == EToResolveMarkType::Break || v.type == EToResolveMarkType::Continue;
+						});
+						std::move(it, fb->to_resolve_marks.end(), std::back_insert_iterator(to_resolve_marks));
+						fb->to_resolve_marks.erase(it, fb->to_resolve_marks.end());
+					}
+
+					add_instruction(Instruction_JMP {
+						.mark = CodePosMark{ .id = while_pos },
+					});
+
+					auto while_pos_before = get_instruction_block_id();
+					add_instruction_block();
+					auto while_pos_after = get_instruction_block_id();
+					auto while_pos_last = get_instruction_block_id();
+
+					VarIDType v_result = StaticVariableID{ (size_t)StaticGlobalType::Null };
+
+					// inverse logic: if-not then jump
+					switch (*condition)
+					{
+						case ConditionType::Zero:
+							add_instruction(while_pos, Instruction_JNE {
+								.mark = CodePosMark{ .id = while_pos_after },
+							});
+							break;
+						case ConditionType::NotZero:
+							add_instruction(while_pos, Instruction_JE {
+								.mark = CodePosMark{ .id = while_pos_after },
+							});
+							break;
+						case ConditionType::Positive:
+							add_instruction(while_pos, Instruction_JLE {
+								.mark = CodePosMark{ .id = while_pos_after },
+							});
+							break;
+						case ConditionType::NotPositive:
+							add_instruction(while_pos, Instruction_JGT {
+								.mark = CodePosMark{ .id = while_pos_after },
+							});
+							break;
+						case ConditionType::Negative:
+							add_instruction(while_pos, Instruction_JGE {
+								.mark = CodePosMark{ .id = while_pos_after },
+							});
+							break;
+						case ConditionType::NotNegative:
+							add_instruction(while_pos, Instruction_JLT {
+								.mark = CodePosMark{ .id = while_pos_after },
+							});
+							break;
+					}
+
+					if (expr_block_else_maybe.size() > 0)
+					{
+						const auto &expr_block_else_g = expr_block_else_maybe.get(0, mylang::$IdentifierType::$i_expr_while_$g0_$g0);
+						const auto &expr_block_else = expr_block_else_g.get(3, mylang::$IdentifierType::$i_expr_block);
+
+						auto else_pos_before = get_instruction_block_id();
+						auto v_else_block = compile_expr(expr_block_else);
+						_debug_(active_function_blocks.back()->instruction_blocks.back()._debug_info = "else <- if (" + util::minimize_whitespaces(mylang::helpers::ansii_colored(expr_condition, ansii_colors, default_ansii_color)) + ")");
+						add_instruction_block();
+						auto else_pos_after = get_instruction_block_id();
+						while_pos_last = get_instruction_block_id();
+
+						if (!v_else_block.is_null())
+						{
+							if (v_result.is_null())
+								v_result = add_local_variable();
+
+							add_instruction(else_pos_before, Instruction_MOV {
+								.dest = v_result,
+								.src = v_else_block,
+							});
+						}
+					}
+
+					for (const auto &to_resolve_mark : to_resolve_marks)
+					{
+						switch (to_resolve_mark.type)
+						{
+							case EToResolveMarkType::Break:
+								{
+									auto jmp = std::get_if<Instruction_JMP>(&active_function_blocks.back()->instruction_blocks[to_resolve_mark.instruction_block_id].instructions[to_resolve_mark.instruction_id]);
+
+									if (!jmp)
+										throw 1;
+
+									jmp->mark = CodePosMark{ .id = while_pos_last };
+
+									if (to_resolve_mark.value_instruction_id != (size_t)-1)
+									{
+										if (v_result.is_null())
+											v_result = add_local_variable();
+
+										if (auto mov = std::get_if<Instruction_MOV>(&active_function_blocks.back()->instruction_blocks[to_resolve_mark.instruction_block_id].instructions[to_resolve_mark.value_instruction_id]))
+											mov->dest = v_result;
+									}
+
+									break;
+								}
+							case EToResolveMarkType::Continue:
+								{
+									auto jmp = std::get_if<Instruction_JMP>(&active_function_blocks.back()->instruction_blocks[to_resolve_mark.instruction_block_id].instructions[to_resolve_mark.instruction_id]);
+
+									if (!jmp)
+										throw 1;
+
+									jmp->mark = CodePosMark{ .id = while_pos };
+
+									break;
+								}
+						}
 					}
 
 					return v_result;
@@ -2216,6 +2591,17 @@ struct Compiler
 		const auto &expr_if = statement_if.get(0, mylang::$IdentifierType::$i_expr_if);
 
 		auto v_expr = compile_expr(expr_if);
+		(void)v_expr;
+	}
+
+	void compile_statement_while(const mylang::$Parsed &statement_while)
+	{
+		assert(statement_while.identifier == mylang::$IdentifierType::$i_statement_while);
+
+		const auto &expr_while = statement_while.get(0, mylang::$IdentifierType::$i_expr_while);
+
+		auto v_expr = compile_expr(expr_while);
+		(void)v_expr;
 	}
 
 	void compile_statement_let(const mylang::$Parsed &statement_let)
@@ -2279,6 +2665,60 @@ struct Compiler
 		});
 	}
 
+	void compile_statement_continue(const mylang::$Parsed &statement_continue)
+	{
+		assert(statement_continue.identifier == mylang::$IdentifierType::$i_statement_continue);
+
+		add_instruction(Instruction_JMP {
+			.mark = CodePosMark{ (size_t)-1 },
+			_debug_(._debug_info = util::minimize_whitespaces(mylang::helpers::ansii_colored(statement_continue, ansii_colors, default_ansii_color)))
+		});
+
+		function_blocks.back()->to_resolve_marks.push_back(ToResolveMark {
+			.type = EToResolveMarkType::Continue,
+			.instruction_block_id = function_blocks.back()->instruction_blocks.size() - 1,
+			.instruction_id = function_blocks.back()->instruction_blocks.back().instructions.size() - 1,
+			.value_instruction_id = (size_t)-1,
+		});
+	}
+
+	void compile_statement_break(const mylang::$Parsed &statement_break)
+	{
+		assert(statement_break.identifier == mylang::$IdentifierType::$i_statement_break);
+
+		const auto &statement_break_$g0 = statement_break.get(1, mylang::$IdentifierType::$i_statement_break_$g0);
+
+		size_t value_instruction_id = (size_t)-1;
+
+		if (statement_break_$g0.size() > 0)
+		{
+			const auto &statement_break_$g0_$g0 = statement_break_$g0.get(0, mylang::$IdentifierType::$i_statement_break_$g0_$g0);
+			const auto &expr = statement_break_$g0_$g0.get(1);
+
+			auto v_result = compile_expr(expr);
+
+			add_instruction(Instruction_MOV {
+				.dest = StaticVariableID{ (size_t)StaticGlobalType::Null },
+				.src = v_result,
+				_debug_(._debug_info = util::minimize_whitespaces(mylang::helpers::ansii_colored(statement_break, ansii_colors, default_ansii_color)))
+			});
+
+			value_instruction_id = function_blocks.back()->instruction_blocks.back().instructions.size() - 1;
+		}
+
+		add_instruction(Instruction_JMP {
+			.mark = CodePosMark{ (size_t)-1 },
+			_debug_(._debug_info = util::minimize_whitespaces(mylang::helpers::ansii_colored(statement_break, ansii_colors, default_ansii_color)))
+		});
+
+		function_blocks.back()->to_resolve_marks.push_back(ToResolveMark {
+			.type = EToResolveMarkType::Break,
+			.instruction_block_id = function_blocks.back()->instruction_blocks.size() - 1,
+			.instruction_id = function_blocks.back()->instruction_blocks.back().instructions.size() - 1,
+			.value_instruction_id = value_instruction_id,
+		});
+	}
+
 	void compile_statement_expr(const mylang::$Parsed &statement_expr)
 	{
 		assert(statement_expr.identifier == mylang::$IdentifierType::$i_statement_expr);
@@ -2303,6 +2743,11 @@ struct Compiler
 					const auto &statement_if = par;
 					return compile_statement_if(statement_if);
 				}
+			case mylang::$IdentifierType::$i_statement_while:
+				{
+					const auto &statement_while = par;
+					return compile_statement_while(statement_while);
+				}
 			case mylang::$IdentifierType::$i_statement_let:
 				{
 					const auto &statement_let = par;
@@ -2312,6 +2757,16 @@ struct Compiler
 				{
 					const auto &statement_return = par;
 					return compile_statement_return(statement_return);
+				}
+			case mylang::$IdentifierType::$i_statement_continue:
+				{
+					const auto &statement_continue = par;
+					return compile_statement_continue(statement_continue);
+				}
+			case mylang::$IdentifierType::$i_statement_break:
+				{
+					const auto &statement_break = par;
+					return compile_statement_break(statement_break);
 				}
 			case mylang::$IdentifierType::$i_statement_expr:
 				{
@@ -2354,9 +2809,134 @@ struct Compiler
 			compile_statement(statement);
 		}
 
-		add_instruction(Instruction_HLT{
+		add_instruction(Instruction_HLT {
 			_debug_(._debug_info = "// Program end")
 		});
+	}
+
+	Program generate_program()
+	{
+		Program program;
+		program.bytes = generate_bytecode();
+
+		program.entry_point = FunctionInfo {
+			.code_offset = function_blocks[0]->code_offset,
+			.stack_size = function_blocks[0]->scopes_variables_size,
+		};
+
+		for (size_t i = 0; i < statics.size(); ++i)
+		{
+			const auto &visitor = [&](const auto &static_var) {
+				using T = std::decay_t<decltype(static_var)>;
+
+				if constexpr (std::is_same_v<T, int64_t>)
+				{
+					program.statics.push_back(sptr<RuntimeValueI64>::create_bounded(static_var));
+				}
+				else
+				if constexpr (std::is_same_v<T, std::string>)
+				{
+					program.statics.push_back(sptr<RuntimeValueStr>::create_bounded(static_var));
+				}
+				else
+				if constexpr (std::is_same_v<T, Compiler::LambdaInfo>)
+				{
+					auto lambda = sptr<RuntimeValueLambda>::create_bounded(nullptr);
+					lambda->func_info.stack_size = static_var.function_block->scopes_variables_size;
+					lambda->func_info.code_offset = static_var.function_block->code_offset;
+					program.statics.push_back(lambda);
+				}
+				else
+				if constexpr (std::is_same_v<T, Compiler::StaticNull>)
+				{
+					program.statics.push_back({});
+				}
+				else
+				{
+					static_assert(always_false_v<T>, "Unknown type");
+				}
+			};
+
+			std::visit(visitor, statics[i]);
+		}
+
+		*program.resolve({ "std", "print"}) = sptr<RuntimeValueLambda>::create_bounded([](Program &program, const std::span<ivalue_t> &args) {
+			for (size_t i = 0; i < args.size(); ++i)
+			{
+				const auto &arg = args[i];
+
+				if (i != 0)
+					std::cout << " ";
+
+				switch (arg->type)
+				{
+					case ERuntimeValueType::I64:
+						std::cout << arg.casted<RuntimeValueI64>()->val;
+						break;
+					case ERuntimeValueType::Str:
+						std::cout << arg.casted<RuntimeValueStr>()->val;
+						break;
+					case ERuntimeValueType::Dict:
+							std::cout << "dict{ size = " << arg.casted<RuntimeValueDict>()->val.size() << " }";
+						break;
+					case ERuntimeValueType::Lambda:
+							std::cout << "<lambda>";
+						break;
+				}
+			}
+
+			std::cout << "\n";
+		});
+
+		*program.resolve({ "std", "i64"}) = sptr<RuntimeValueLambda>::create_bounded([](Program &program, const std::span<ivalue_t> &args) {
+			auto result = sptr<RuntimeValueI64>::create_bounded();
+
+			if (args.size() > 0 && args[0])
+			{
+				switch (args[0]->type)
+				{
+					case ERuntimeValueType::I64:
+						result->val = args[0].casted<RuntimeValueI64>()->val;
+						break;
+					case ERuntimeValueType::Str:
+						result->val = stoll(args[0].casted<RuntimeValueStr>()->val);
+						break;
+				}
+			}
+
+			program.set_retval(result);
+		});
+
+		*program.resolve({ "std", "str"}) = sptr<RuntimeValueLambda>::create_bounded([](Program &program, const std::span<ivalue_t> &args) {
+			auto result = sptr<RuntimeValueStr>::create_bounded();
+
+			if (args.size() > 0 && args[0])
+			{
+				switch (args[0]->type)
+				{
+					case ERuntimeValueType::I64:
+						result->val = std::to_string(args[0].casted<RuntimeValueI64>()->val);
+						break;
+					case ERuntimeValueType::Str:
+						result->val = args[0].casted<RuntimeValueStr>()->val;
+						break;
+				}
+			}
+
+			program.set_retval(result);
+		});
+
+		*program.resolve({ "std", "dict"}) = sptr<RuntimeValueLambda>::create_bounded([](Program &program, const std::span<ivalue_t> &args) {
+			program.set_retval(sptr<RuntimeValueDict>::create_bounded());
+		});
+
+		*program.resolve({ "std", "null"}) = sptr<RuntimeValueLambda>::create_bounded([](Program &program, const std::span<ivalue_t> &args) {
+			program.set_retval({});
+		});
+
+		*program.resolve({ "exports" }) = sptr<RuntimeValueDict>::create_bounded();
+
+		return program;
 	}
 
 	std::vector<uint8_t> generate_bytecode()
@@ -2443,7 +3023,7 @@ struct Compiler
 				};
 
 				results.push_back(std::visit(visitor, v_static));
-				poses.push_back(util::num_to_str(i));
+				poses.push_back(std::to_string(i));
 				poses_max_length = poses.back().size() > poses_max_length ? poses.back().size() : poses_max_length;
 			}
 
@@ -2560,7 +3140,6 @@ void mylang_byte_main(int argc, const char **argv)
 		std::cout << "--- code begin ---\n" << mylang::helpers::ansii_colored(root, ansii_colors, default_ansii_color) << "--- code end ---\n";
 	}
 
-
 	{
 		vm::fix_tree(root);
 		vm::optimize_tree(root);
@@ -2568,91 +3147,18 @@ void mylang_byte_main(int argc, const char **argv)
 		vm::Compiler compiler;
 		compiler.compile_root(root);
 
-		vm::Program program;
-		program.bytes = compiler.generate_bytecode();
+		vm::Program program = compiler.generate_program();
 
 		std::cout << "--- bytecode begin ---\n";
 		std::cout << compiler.to_string_bytecode();
 		std::cout << "--- bytecode end ---\n";
 
-		{
-			for (size_t i = 0; i < compiler.statics.size(); ++i)
-			{
-				const auto &visitor = [&](const auto &static_var) {
-					using T = std::decay_t<decltype(static_var)>;
-
-					if constexpr (std::is_same_v<T, int64_t>)
-					{
-						program.statics.push_back(sptr<vm::RuntimeValueI64>::create_bounded(static_var));
-					}
-					else
-					if constexpr (std::is_same_v<T, std::string>)
-					{
-						program.statics.push_back(sptr<vm::RuntimeValueStr>::create_bounded(static_var));
-					}
-					else
-					if constexpr (std::is_same_v<T, vm::Compiler::LambdaInfo>)
-					{
-						auto lambda = sptr<vm::RuntimeValueLambda>::create_bounded(nullptr);
-						lambda->stack_size = static_var.function_block->scopes_variables_size;
-						lambda->code_offset = static_var.function_block->code_offset;
-						program.statics.push_back(lambda);
-					}
-					else
-					if constexpr (std::is_same_v<T, vm::Compiler::StaticNull>)
-					{
-						program.statics.push_back({});
-					}
-					else
-					{
-						static_assert(vm::always_false_v<T>, "Unknown type");
-					}
-				};
-
-				std::visit(visitor, compiler.statics[i]);
-			}
-		}
-
-		{
-			auto g = sptr<vm::RuntimeValueDict>::create_bounded();
-			program.statics[(size_t)vm::StaticGlobalType::ResolveDict] = g;
-
-			auto std = sptr<vm::RuntimeValueDict>::create_bounded();
-			g->val["std"] = std;
-
-			std->val["print"] = sptr<vm::RuntimeValueLambda>::create_bounded([](vm::Program &program, const std::span<vm::ivalue_t> &args) {
-
-				for (size_t i = 0; i < args.size(); ++i)
-				{
-					const auto &arg = args[i];
-
-					if (i != 0)
-						std::cout << " ";
-
-					switch (arg->type)
-					{
-						case vm::ERuntimeValueType::I64:
-							std::cout << arg.casted<vm::RuntimeValueI64>()->val;
-							break;
-						case vm::ERuntimeValueType::Str:
-							std::cout << arg.casted<vm::RuntimeValueStr>()->val;
-							break;
-						case vm::ERuntimeValueType::Dict:
-								std::cout << "dict{ size = " << arg.casted<vm::RuntimeValueDict>()->val.size() << " }";
-							break;
-						case vm::ERuntimeValueType::Lambda:
-								std::cout << "<lambda>";
-							break;
-					}
-				}
-
-				std::cout << "\n";
-			});
-		}
-
 		std::cout << "--- program begin ---\n";
-		program.run(compiler.function_blocks[0]->code_offset, compiler.function_blocks[0]->scopes_variables_size);
+		program.run();
 		std::cout << "--- program end ---\n";
+		std::cout << "--- my_update begin ---\n";
+		program.run_call({ "exports", "my_update" }, { *program.resolve({ "std", "print" }), sptr<vm::RuntimeValueI64>::create_bounded(50) });
+		std::cout << "--- my_update end ---\n";
 	}
 
 

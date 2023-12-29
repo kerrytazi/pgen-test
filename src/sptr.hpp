@@ -218,6 +218,15 @@ struct sptr
 
 	// UNSAFE AS F*CK!!!
 	template <typename other_value_type>
+	constexpr sptr<other_value_type, counter_type> &casted() & noexcept
+	{
+		assert((other_value_type *)(void *)123 == (value_type *)(void *)123);
+
+		return *reinterpret_cast<sptr<other_value_type, counter_type> *>(this);
+	}
+
+	// UNSAFE AS F*CK!!!
+	template <typename other_value_type>
 	constexpr const sptr<other_value_type, counter_type> &casted() const & noexcept
 	{
 		assert((other_value_type *)(void *)123 == (value_type *)(void *)123);
