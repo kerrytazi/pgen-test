@@ -38,8 +38,32 @@ let c = a + b;
 std.print(func1(b, c) + func2(c, func1));
 
 
-exports.my_update = |a, b| {
-	std.print(123);
-	a(b);
+exports.my_update = || {
+	let sw = Example.ScreenWidth();
+	let sh = Example.ScreenHeight();
+
+	let rand = Example.rand;
+	let Pixel = Example.olc.Pixel;
+	let Draw = Example.Draw;
+
+	let mut x = 0;
+	while (x < sw)
+	{
+		let mut y = 0;
+		while (y < sh)
+		{
+			let p = Pixel(
+				rand() % 255,
+				rand() % 255,
+				rand() % 255
+			);
+
+			Draw(x, y, p);
+
+			y = y + 1;
+		}
+
+		x = x + 1;
+	}
 };
 

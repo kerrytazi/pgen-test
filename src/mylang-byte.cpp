@@ -11,6 +11,7 @@
 #include <ranges>
 #include <variant>
 #include <algorithm>
+#include <chrono>
 
 #include "small_vector.hpp"
 #include "sptr.hpp"
@@ -350,18 +351,24 @@ struct RuntimeValueStr : IRuntimeValueBaseTemplated<ERuntimeValueType::Str>
 	}
 };
 
+struct BufferedDict
+{
+	size_t struct_id = 0;
+	small_vector<ivalue_t, 16> vals;
+};
+
 struct RuntimeValueDict : IRuntimeValueBaseTemplated<ERuntimeValueType::Dict>
 {
-	std::unordered_map<std::string, ivalue_t> val;
+	BufferedDict val;
 	
 	RuntimeValueDict() : IRuntimeValueBaseTemplated<ERuntimeValueType::Dict>() {}
 
-	RuntimeValueDict(const std::unordered_map<std::string, ivalue_t> &val_) : RuntimeValueDict()
+	RuntimeValueDict(const BufferedDict &val_) : RuntimeValueDict()
 	{
 		val = val_;
 	}
 
-	RuntimeValueDict(std::unordered_map<std::string, ivalue_t> &&val_) : RuntimeValueDict()
+	RuntimeValueDict(BufferedDict &&val_) : RuntimeValueDict()
 	{
 		val = std::move(val_);
 	}
@@ -413,7 +420,11 @@ enum class InstructionOpCode : uint8_t
 	DGET,
 	DSET,
 	LC,
+
 	ADD,
+	MUL,
+	DIV,
+	MOD,
 
 	CMP,
 
@@ -436,6 +447,11 @@ struct Program
 		size_t stack_size;
 	};
 
+	std::unique_ptr<sptr_memory_pool<RuntimeValueI64>> memory_pool_i64 = std::make_unique<sptr_memory_pool<RuntimeValueI64>>();
+	std::unique_ptr<sptr_memory_pool<RuntimeValueStr>> memory_pool_str = std::make_unique<sptr_memory_pool<RuntimeValueStr>>();
+	std::unique_ptr<sptr_memory_pool<RuntimeValueDict>> memory_pool_dict = std::make_unique<sptr_memory_pool<RuntimeValueDict>>();
+	std::unique_ptr<sptr_memory_pool<RuntimeValueLambda>> memory_pool_lambda = std::make_unique<sptr_memory_pool<RuntimeValueLambda>>();
+
 	std::vector<uint8_t> bytes;
 	std::vector<RetInfo> ret_stack;
 	std::vector<ivalue_t> stack;
@@ -452,6 +468,27 @@ struct Program
 	};
 
 	CmpResult last_cmp_result = CmpResult::None;
+
+	template <typename... TArgs>
+	sptr<RuntimeValueI64> create_i64(TArgs&&... args)
+	{
+		return memory_pool_i64->create(std::forward<TArgs>(args)...);
+	}
+	template <typename... TArgs>
+	sptr<RuntimeValueStr> create_str(TArgs&&... args)
+	{
+		return memory_pool_str->create(std::forward<TArgs>(args)...);
+	}
+	template <typename... TArgs>
+	sptr<RuntimeValueDict> create_dict(TArgs&&... args)
+	{
+		return memory_pool_dict->create(std::forward<TArgs>(args)...);
+	}
+	template <typename... TArgs>
+	sptr<RuntimeValueLambda> create_lambda(TArgs&&... args)
+	{
+		return memory_pool_lambda->create(std::forward<TArgs>(args)...);
+	}
 
 	/*
 		number_1: 0000 0000 - 0111 1100
@@ -509,7 +546,7 @@ struct Program
 		return unpack_value(unpack_number(b), stack_offset);
 	}
 
-	ivalue_t run_call(const std::initializer_list<std::string> &path, const std::vector<ivalue_t> &args)
+	ivalue_t run_call(const std::initializer_list<std::string_view> &path, const std::vector<ivalue_t> &args)
 	{
 		return run_call(*resolve(path)->casted<vm::RuntimeValueLambda>(), args);
 	}
@@ -567,7 +604,7 @@ struct Program
 		run(entry_point);
 	}
 
-	void run(const std::initializer_list<std::string> &path)
+	void run(const std::initializer_list<std::string_view> &path)
 	{
 		run(resolve(path)->casted<vm::RuntimeValueLambda>()->func_info);
 	}
@@ -586,7 +623,7 @@ struct Program
 
 		while (42)
 		{
-			std::cout << "[debug] pos: " << util::num_to_str((size_t)(b - bytes.data())) << "\n";
+			// std::cout << "[debug] pos: " << util::num_to_str((size_t)(b - bytes.data())) << "\n";
 			InstructionOpCode opcode = (InstructionOpCode)*b++;
 
 			switch (opcode)
@@ -675,11 +712,11 @@ struct Program
 						assert(path && path->type == ERuntimeValueType::Str);
 
 						const auto &dict_val = dict.casted<RuntimeValueDict>()->val;
-						auto it = dict.casted<RuntimeValueDict>()->val.find(path.casted<RuntimeValueStr>()->val);
+						auto it = find_buffered(dict.casted<RuntimeValueDict>()->val, path.casted<RuntimeValueStr>()->val);
 
-						assert(it != dict_val.end());
+						assert(it);
 
-						result = it->second;
+						result = *it;
 						break;
 					}
 
@@ -693,7 +730,7 @@ struct Program
 						assert(path && path->type == ERuntimeValueType::Str);
 
 						const auto &dict_val = dict.casted<RuntimeValueDict>()->val;
-						auto it = dict.casted<RuntimeValueDict>()->val[path.casted<RuntimeValueStr>()->val] = val;
+						*get_or_declare_buffered(dict.casted<RuntimeValueDict>()->val, path.casted<RuntimeValueStr>()->val) = val;
 
 						break;
 					}
@@ -709,7 +746,7 @@ struct Program
 						size_t num_captures = num_captures_pair.first;
 
 						const auto &lambda = func.casted<RuntimeValueLambda>();
-						result = sptr<RuntimeValueLambda>::create_bounded(*lambda);
+						result = create_lambda(*lambda);
 
 						for (size_t i = 0; i < num_captures; ++i)
 							result.casted<RuntimeValueLambda>()->captures.push_back(unpack_value(b));
@@ -726,7 +763,46 @@ struct Program
 						assert(left && left->type == ERuntimeValueType::I64);
 						assert(right && right->type == ERuntimeValueType::I64);
 
-						result = sptr<RuntimeValueI64>::create_bounded(left.casted<RuntimeValueI64>()->val + right.casted<RuntimeValueI64>()->val);
+						result = create_i64(left.casted<RuntimeValueI64>()->val + right.casted<RuntimeValueI64>()->val);
+						break;
+					}
+
+				case InstructionOpCode::MUL:
+					{
+						auto &result = unpack_value(b);
+						const auto &left = unpack_value(b);
+						const auto &right = unpack_value(b);
+
+						assert(left && left->type == ERuntimeValueType::I64);
+						assert(right && right->type == ERuntimeValueType::I64);
+
+						result = create_i64(left.casted<RuntimeValueI64>()->val * right.casted<RuntimeValueI64>()->val);
+						break;
+					}
+
+				case InstructionOpCode::DIV:
+					{
+						auto &result = unpack_value(b);
+						const auto &left = unpack_value(b);
+						const auto &right = unpack_value(b);
+
+						assert(left && left->type == ERuntimeValueType::I64);
+						assert(right && right->type == ERuntimeValueType::I64);
+
+						result = create_i64(left.casted<RuntimeValueI64>()->val / right.casted<RuntimeValueI64>()->val);
+						break;
+					}
+
+				case InstructionOpCode::MOD:
+					{
+						auto &result = unpack_value(b);
+						const auto &left = unpack_value(b);
+						const auto &right = unpack_value(b);
+
+						assert(left && left->type == ERuntimeValueType::I64);
+						assert(right && right->type == ERuntimeValueType::I64);
+
+						result = create_i64(left.casted<RuntimeValueI64>()->val % right.casted<RuntimeValueI64>()->val);
 						break;
 					}
 
@@ -848,19 +924,96 @@ struct Program
 		return statics[(size_t)StaticGlobalType::RetVal];
 	}
 
-	ivalue_t *resolve(const std::initializer_list<std::string> &path)
+	ivalue_t *resolve(const std::initializer_list<std::string_view> &path)
 	{
 		ivalue_t *v = &statics[(size_t)StaticGlobalType::ResolveDict];
 
 		for (const auto &tok : path)
 		{
 			if (!*v)
-				*v = sptr<RuntimeValueDict>::create_bounded();
+				*v = create_dict();
 
-			v = &v->casted<RuntimeValueDict>()->val[tok];
+			v = get_or_declare_buffered(v->casted<RuntimeValueDict>()->val, tok);
 		}
 
 		return v;
+	}
+
+	std::vector<std::vector<std::string_view>> struct_buffers = { std::vector<std::string_view>{} };
+
+	ivalue_t *get_or_declare_buffered(BufferedDict &dict, const std::string_view &tok)
+	{
+		const auto &st = struct_buffers[dict.struct_id];
+		auto it = std::lower_bound(st.begin(), st.end(), tok, [](const auto &left, const auto &right) {
+			return left < right;
+		});
+
+		if (it != st.end() && *it == tok)
+			return &dict.vals[(size_t)(it - st.begin())];
+
+		size_t it_idx = it - st.begin();
+
+		for (size_t i = 1; i < struct_buffers.size(); ++i)
+		{
+			if (i == dict.struct_id)
+				continue;
+
+			const auto &st = struct_buffers[i];
+
+			if (st.size() != dict.vals.size() + 1)
+				continue;
+
+			auto it = std::lower_bound(st.begin(), st.end(), tok, [](const auto &left, const auto &right) {
+				return left < right;
+			});
+
+			if (it != st.end() && *it == tok)
+			{
+				bool found = true;
+				size_t skip_idx = it - st.begin();
+
+				for (size_t j = 0, j2 = 0; j < st.size(); ++j, ++j2)
+				{
+					if (j == skip_idx)
+					{
+						++j;
+						continue;
+					}
+
+					if (st[j] != struct_buffers[dict.struct_id][j2])
+					{
+						found = false;
+						break;
+					}
+				}
+
+				if (found)
+				{
+					dict.struct_id = i;
+					return &*dict.vals.insert(dict.vals.begin() + skip_idx, ivalue_t{});
+				}
+			}
+		}
+
+		{
+			auto &new_struct = struct_buffers.emplace_back(struct_buffers[dict.struct_id]);
+			dict.struct_id = struct_buffers.size() - 1;
+			new_struct.insert(new_struct.begin() + it_idx, tok);
+			return &*dict.vals.insert(dict.vals.begin() + it_idx, ivalue_t{});
+		}
+	}
+
+	const ivalue_t *find_buffered(const BufferedDict &dict, const std::string_view &tok) const
+	{
+		const auto &st = struct_buffers[dict.struct_id];
+		auto it = std::lower_bound(st.begin(), st.end(), tok, [](const auto &left, const auto &right) {
+			return left < right;
+		});
+
+		if (it != st.end() && *it == tok)
+			return &dict.vals[(size_t)(it - st.begin())];
+
+		return nullptr;
 	}
 };
 
@@ -1320,6 +1473,99 @@ struct Compiler
 		}
 	};
 
+	struct Instruction_MUL
+	{
+		VarIDType result;
+		VarIDType left;
+		VarIDType right;
+
+		_debug_(std::string _debug_info;);
+
+		void generate_bytecode(const FunctionBlock &funcblock, std::vector<uint8_t> &bytecode) const
+		{
+			bytecode.push_back((uint8_t)InstructionOpCode::MUL);
+			pack_number(bytecode, funcblock.regenerate(result));
+			pack_number(bytecode, funcblock.regenerate(left));
+			pack_number(bytecode, funcblock.regenerate(right));
+		}
+
+		std::string to_string_bytecode() const
+		{
+			std::string res;
+
+			res += "mul ";
+			res += result.to_string_bytecode();
+			res += " ";
+			res += left.to_string_bytecode();
+			res += " ";
+			res += right.to_string_bytecode();
+
+			return res;
+		}
+	};
+
+	struct Instruction_DIV
+	{
+		VarIDType result;
+		VarIDType left;
+		VarIDType right;
+
+		_debug_(std::string _debug_info;);
+
+		void generate_bytecode(const FunctionBlock &funcblock, std::vector<uint8_t> &bytecode) const
+		{
+			bytecode.push_back((uint8_t)InstructionOpCode::DIV);
+			pack_number(bytecode, funcblock.regenerate(result));
+			pack_number(bytecode, funcblock.regenerate(left));
+			pack_number(bytecode, funcblock.regenerate(right));
+		}
+
+		std::string to_string_bytecode() const
+		{
+			std::string res;
+
+			res += "div ";
+			res += result.to_string_bytecode();
+			res += " ";
+			res += left.to_string_bytecode();
+			res += " ";
+			res += right.to_string_bytecode();
+
+			return res;
+		}
+	};
+
+	struct Instruction_MOD
+	{
+		VarIDType result;
+		VarIDType left;
+		VarIDType right;
+
+		_debug_(std::string _debug_info;);
+
+		void generate_bytecode(const FunctionBlock &funcblock, std::vector<uint8_t> &bytecode) const
+		{
+			bytecode.push_back((uint8_t)InstructionOpCode::MOD);
+			pack_number(bytecode, funcblock.regenerate(result));
+			pack_number(bytecode, funcblock.regenerate(left));
+			pack_number(bytecode, funcblock.regenerate(right));
+		}
+
+		std::string to_string_bytecode() const
+		{
+			std::string res;
+
+			res += "mod ";
+			res += result.to_string_bytecode();
+			res += " ";
+			res += left.to_string_bytecode();
+			res += " ";
+			res += right.to_string_bytecode();
+
+			return res;
+		}
+	};
+
 	struct Instruction_CMP
 	{
 		VarIDType left;
@@ -1537,6 +1783,9 @@ struct Compiler
 		Instruction_DSET,
 		Instruction_LC,
 		Instruction_ADD,
+		Instruction_MUL,
+		Instruction_DIV,
+		Instruction_MOD,
 
 		Instruction_CMP,
 
@@ -1898,6 +2147,17 @@ struct Compiler
 			ignore_tokens.resize(ignore_tokens_save_size);
 		}
 		else
+		if (par.identifier == mylang::$IdentifierType::$i_statement_let)
+		{
+			const auto &statement_let = par;
+			const auto &token = statement_let.get(3, mylang::$IdentifierType::$i_token);
+			const auto &expr = statement_let.get(7);
+
+			ignore_tokens.push_back(token.flatten());
+
+			collect_captures(expr, capture_tokens, ignore_tokens);
+		}
+		else
 		if (par.identifier == mylang::$IdentifierType::$i_token_path)
 		{
 			const auto &token_path = par;
@@ -2044,10 +2304,71 @@ struct Compiler
 					const auto &expr_mul = par;
 
 					const auto &expr_left = expr_mul.get(0);
+					const auto &expr_mul_$g0 = expr_mul.get(1, mylang::$IdentifierType::$i_expr_mul_$g0);
 
 					auto v_expr_left = compile_expr(expr_left);
 
-					// TODO;
+					if (expr_mul_$g0.size() > 0)
+					{
+						_debug_(std::string _debug_info = util::minimize_whitespaces(mylang::helpers::ansii_colored(expr_left, ansii_colors, default_ansii_color)););
+
+						for (size_t i = 0; i < expr_mul_$g0.size(); ++i)
+						{
+							const auto &expr_mul_$g0_$g0 = expr_mul_$g0.get(i, mylang::$IdentifierType::$i_expr_mul_$g0_$g0);
+							const auto &expr_mul_$g0_$g0_$g0 = expr_mul_$g0_$g0.get(1, mylang::$IdentifierType::$i_expr_mul_$g0_$g0_$g0);
+							const auto &expr_right = expr_mul_$g0_$g0.get(3);
+
+							_debug_(_debug_info += util::minimize_whitespaces(mylang::helpers::ansii_colored(expr_mul_$g0_$g0, ansii_colors, default_ansii_color)););
+
+							auto v_expr_right = compile_expr(expr_right);
+
+							if (expr_mul_$g0_$g0_$g0.get(0).literal == "*")
+							{
+								auto v_result = add_local_variable();
+
+								add_instruction(Instruction_MUL {
+									.result = v_result,
+									.left = v_expr_left,
+									.right = v_expr_right,
+									_debug_(._debug_info = _debug_info)
+								});
+
+								v_expr_left = v_result;
+							}
+							else
+							if (expr_mul_$g0_$g0_$g0.get(0).literal == "/")
+							{
+								auto v_result = add_local_variable();
+
+								add_instruction(Instruction_DIV {
+									.result = v_result,
+									.left = v_expr_left,
+									.right = v_expr_right,
+									_debug_(._debug_info = _debug_info)
+								});
+
+								v_expr_left = v_result;
+							}
+							else
+							if (expr_mul_$g0_$g0_$g0.get(0).literal == "%")
+							{
+								auto v_result = add_local_variable();
+
+								add_instruction(Instruction_MOD {
+									.result = v_result,
+									.left = v_expr_left,
+									.right = v_expr_right,
+									_debug_(._debug_info = _debug_info)
+								});
+
+								v_expr_left = v_result;
+							}
+							else
+							{
+								throw 1;
+							}
+						}
+					}
 
 					return v_expr_left;
 				}
@@ -2831,17 +3152,17 @@ struct Compiler
 
 				if constexpr (std::is_same_v<T, int64_t>)
 				{
-					program.statics.push_back(sptr<RuntimeValueI64>::create_bounded(static_var));
+					program.statics.push_back(program.create_i64(static_var));
 				}
 				else
 				if constexpr (std::is_same_v<T, std::string>)
 				{
-					program.statics.push_back(sptr<RuntimeValueStr>::create_bounded(static_var));
+					program.statics.push_back(program.create_str(static_var));
 				}
 				else
 				if constexpr (std::is_same_v<T, Compiler::LambdaInfo>)
 				{
-					auto lambda = sptr<RuntimeValueLambda>::create_bounded(nullptr);
+					auto lambda = program.create_lambda();
 					lambda->func_info.stack_size = static_var.function_block->scopes_variables_size;
 					lambda->func_info.code_offset = static_var.function_block->code_offset;
 					program.statics.push_back(lambda);
@@ -2860,7 +3181,7 @@ struct Compiler
 			std::visit(visitor, statics[i]);
 		}
 
-		*program.resolve({ "std", "print"}) = sptr<RuntimeValueLambda>::create_bounded([](Program &program, const std::span<ivalue_t> &args) {
+		*program.resolve({ "std", "print"}) = program.create_lambda([](Program &program, const std::span<ivalue_t> &args) {
 			for (size_t i = 0; i < args.size(); ++i)
 			{
 				const auto &arg = args[i];
@@ -2877,10 +3198,10 @@ struct Compiler
 						std::cout << arg.casted<RuntimeValueStr>()->val;
 						break;
 					case ERuntimeValueType::Dict:
-							std::cout << "dict{ size = " << arg.casted<RuntimeValueDict>()->val.size() << " }";
+						std::cout << "dict{ size = " << arg.casted<RuntimeValueDict>()->val.vals.size() << " }";
 						break;
 					case ERuntimeValueType::Lambda:
-							std::cout << "<lambda>";
+						std::cout << "<lambda>";
 						break;
 				}
 			}
@@ -2888,8 +3209,8 @@ struct Compiler
 			std::cout << "\n";
 		});
 
-		*program.resolve({ "std", "i64"}) = sptr<RuntimeValueLambda>::create_bounded([](Program &program, const std::span<ivalue_t> &args) {
-			auto result = sptr<RuntimeValueI64>::create_bounded();
+		*program.resolve({ "std", "i64"}) = program.create_lambda([](Program &program, const std::span<ivalue_t> &args) {
+			auto result = program.create_i64();
 
 			if (args.size() > 0 && args[0])
 			{
@@ -2907,8 +3228,8 @@ struct Compiler
 			program.set_retval(result);
 		});
 
-		*program.resolve({ "std", "str"}) = sptr<RuntimeValueLambda>::create_bounded([](Program &program, const std::span<ivalue_t> &args) {
-			auto result = sptr<RuntimeValueStr>::create_bounded();
+		*program.resolve({ "std", "str"}) = program.create_lambda([](Program &program, const std::span<ivalue_t> &args) {
+			auto result = program.create_str();
 
 			if (args.size() > 0 && args[0])
 			{
@@ -2926,15 +3247,15 @@ struct Compiler
 			program.set_retval(result);
 		});
 
-		*program.resolve({ "std", "dict"}) = sptr<RuntimeValueLambda>::create_bounded([](Program &program, const std::span<ivalue_t> &args) {
-			program.set_retval(sptr<RuntimeValueDict>::create_bounded());
+		*program.resolve({ "std", "dict"}) = program.create_lambda([](Program &program, const std::span<ivalue_t> &args) {
+			program.set_retval(program.create_dict());
 		});
 
-		*program.resolve({ "std", "null"}) = sptr<RuntimeValueLambda>::create_bounded([](Program &program, const std::span<ivalue_t> &args) {
+		*program.resolve({ "std", "null"}) = program.create_lambda([](Program &program, const std::span<ivalue_t> &args) {
 			program.set_retval({});
 		});
 
-		*program.resolve({ "exports" }) = sptr<RuntimeValueDict>::create_bounded();
+		*program.resolve({ "exports" }) = program.create_dict();
 
 		return program;
 	}
@@ -3000,7 +3321,7 @@ struct Compiler
 					else
 					if constexpr (std::is_same_v<T, Compiler::LambdaInfo>)
 					{
-						return "lambda{ " _debug_(+ v.function_block->_debug_func_name) + " }";
+						return "lambda{ " _debug_(+ v.function_block->_debug_func_name +) " }";
 					}
 					else
 					if constexpr (std::is_same_v<T, Compiler::StaticNull>)
@@ -3122,9 +3443,180 @@ struct Compiler
 } // namespace vm
 
 
+#define OLC_PGE_APPLICATION
+#include "../libs/olcPixelGameEngine/olcPixelGameEngine.h"
+
+
+struct CacheStructPixel
+{
+	size_t struct_id = (size_t)-1;
+
+	size_t r = (size_t)-1;
+	size_t g = (size_t)-1;
+	size_t b = (size_t)-1;
+	size_t a = (size_t)-1;
+
+	struct CacheStructValues
+	{
+		sptr<vm::RuntimeValueI64> &r;
+		sptr<vm::RuntimeValueI64> &g;
+		sptr<vm::RuntimeValueI64> &b;
+		sptr<vm::RuntimeValueI64> &a;
+	};
+
+	explicit CacheStructPixel(vm::Program &program)
+	{
+		vm::BufferedDict val;
+
+		program.get_or_declare_buffered(val, "r");
+		program.get_or_declare_buffered(val, "g");
+		program.get_or_declare_buffered(val, "b");
+		program.get_or_declare_buffered(val, "a");
+
+		struct_id = val.struct_id;
+		r = program.get_or_declare_buffered(val, "r") - val.vals.data();
+		g = program.get_or_declare_buffered(val, "g") - val.vals.data();
+		b = program.get_or_declare_buffered(val, "b") - val.vals.data();
+		a = program.get_or_declare_buffered(val, "a") - val.vals.data();
+	}
+
+	CacheStructValues get_or_declare_buffered(vm::BufferedDict &val)
+	{
+		if (val.struct_id != struct_id)
+		{
+			val.struct_id = struct_id;
+			val.vals.resize(4);
+		}
+
+		return CacheStructValues {
+			.r = val.vals[r].casted<vm::RuntimeValueI64>(),
+			.g = val.vals[g].casted<vm::RuntimeValueI64>(),
+			.b = val.vals[b].casted<vm::RuntimeValueI64>(),
+			.a = val.vals[a].casted<vm::RuntimeValueI64>(),
+		};
+	}
+
+	CacheStructValues find_buffered(vm::BufferedDict &val) const
+	{
+		assert(val.struct_id != struct_id);
+
+		return CacheStructValues {
+			.r = val.vals[r].casted<vm::RuntimeValueI64>(),
+			.g = val.vals[g].casted<vm::RuntimeValueI64>(),
+			.b = val.vals[b].casted<vm::RuntimeValueI64>(),
+			.a = val.vals[a].casted<vm::RuntimeValueI64>(),
+		};
+	}
+};
+
+class Example : public olc::PixelGameEngine
+{
+public:
+	Example()
+	{
+		sAppName = "Example";
+	}
+
+	vm::Program program;
+
+public:
+	bool OnUserCreate() override
+	{
+		std::string text = util::read_file("../src/mylang/mylang-byte_test.txt");
+
+		const char *s = text.data();
+		const char *e = s + text.size();
+
+		auto root = mylang::$parse_root(s, e).value();
+
+		vm::fix_tree(root);
+		vm::optimize_tree(root);
+
+		vm::Compiler compiler;
+		compiler.compile_root(root);
+
+		program = compiler.generate_program();
+
+		*program.resolve({ "Example", "ScreenWidth" }) = program.create_lambda([this](vm::Program &program, const std::span<vm::ivalue_t> &args) {
+			program.set_retval(program.create_i64(this->ScreenWidth()));
+		});
+
+		*program.resolve({ "Example", "ScreenHeight" }) = program.create_lambda([this](vm::Program &program, const std::span<vm::ivalue_t> &args) {
+			program.set_retval(program.create_i64(this->ScreenHeight()));
+		});
+
+		static CacheStructPixel cache_struct_pixel(program);
+
+		*program.resolve({ "Example", "olc", "Pixel" }) = program.create_lambda([&](vm::Program &program, const std::span<vm::ivalue_t> &args) {
+			auto result = program.create_dict();
+
+			auto pixel_info = cache_struct_pixel.get_or_declare_buffered(result->val);
+
+			/* *program.get_or_declare_buffered(result->val, "r") */ pixel_info.r = program.create_i64(args.size() >= 3 ? args[0].casted<vm::RuntimeValueI64>()->val : 0);
+			/* *program.get_or_declare_buffered(result->val, "g") */ pixel_info.g = program.create_i64(args.size() >= 3 ? args[1].casted<vm::RuntimeValueI64>()->val : 0);
+			/* *program.get_or_declare_buffered(result->val, "b") */ pixel_info.b = program.create_i64(args.size() >= 3 ? args[2].casted<vm::RuntimeValueI64>()->val : 0);
+			/* *program.get_or_declare_buffered(result->val, "a") */ pixel_info.a = program.create_i64(args.size() >= 4 ? args[3].casted<vm::RuntimeValueI64>()->val : olc::nDefaultAlpha);
+
+			program.set_retval(result);
+		});
+
+		*program.resolve({ "Example", "rand" }) = program.create_lambda([](vm::Program &program, const std::span<vm::ivalue_t> &args) {
+			program.set_retval(program.create_i64(rand()));
+		});
+
+		*program.resolve({ "Example", "Draw" }) = program.create_lambda([&](vm::Program &program, const std::span<vm::ivalue_t> &args) {
+			int32_t x = args[0].casted<vm::RuntimeValueI64>()->val;
+			int32_t y = args[1].casted<vm::RuntimeValueI64>()->val;
+			auto &pixel = args[2].casted<vm::RuntimeValueDict>()->val;
+
+			auto pixel_info = cache_struct_pixel.find_buffered(pixel);
+
+			int64_t r = pixel_info.r->val; //program.find_buffered(pixel, "r")->casted<vm::RuntimeValueI64>()->val;
+			int64_t g = pixel_info.g->val; //program.find_buffered(pixel, "g")->casted<vm::RuntimeValueI64>()->val;
+			int64_t b = pixel_info.b->val; //program.find_buffered(pixel, "b")->casted<vm::RuntimeValueI64>()->val;
+			int64_t a = pixel_info.a->val; //program.find_buffered(pixel, "a")->casted<vm::RuntimeValueI64>()->val;
+
+			this->Draw(x, y, olc::Pixel(r, g, b, a));
+		});
+
+		program.run();
+
+		return true;
+	}
+
+	bool OnUserUpdate(float fElapsedTime) override
+	{
+		Clear(olc::RED);
+
+		auto start = std::chrono::high_resolution_clock::now();
+
+		program.run_call({ "exports", "my_update" }, {});
+
+		auto end = std::chrono::high_resolution_clock::now();
+		std::cout << "Elapsed time: " << ((double)std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count() / 1000.0) << " us\n";
+
+		return true;
+	}
+};
+
+
+int olc_main()
+{
+	Example demo;
+	if (demo.Construct(256, 240, 4, 4))
+		demo.Start();
+
+	return 0;
+}
+
 
 void mylang_byte_main(int argc, const char **argv)
 {
+	free(malloc(123));
+
+	olc_main();
+	return;
+
 	std::string text = util::read_file("../src/mylang/mylang-byte_test.txt");
 
 	const char *s = text.data();
@@ -3157,7 +3649,7 @@ void mylang_byte_main(int argc, const char **argv)
 		program.run();
 		std::cout << "--- program end ---\n";
 		std::cout << "--- my_update begin ---\n";
-		program.run_call({ "exports", "my_update" }, { *program.resolve({ "std", "print" }), sptr<vm::RuntimeValueI64>::create_bounded(50) });
+		program.run_call({ "exports", "my_update" }, { *program.resolve({ "std", "print" }), program.create_i64(50) });
 		std::cout << "--- my_update end ---\n";
 	}
 

@@ -16,6 +16,7 @@
 #include <functional>
 #include <variant>
 #include <algorithm>
+#include <chrono>
 
 #include <new>
 #include <utility>
